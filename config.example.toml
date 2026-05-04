@@ -1,0 +1,28 @@
+# GoEHentai Configuration
+# Copy this file to config.toml and fill in your settings.
+
+[download]
+# Default download directory (relative to current working directory)
+download_dir = "./downloads"
+# Maximum parallel image downloads
+max_parallel = 3
+# Delay between HTTP requests (seconds) to avoid rate limiting
+rate_limit_delay = 1.5
+# Number of retries on failure
+retry_count = 3
+# Delay between retries (seconds)
+retry_delay = 5.0
+# Prefer torrent download when available
+prefer_torrent = true
+
+[cookies]
+# Required for ExHentai access. Get these from your browser cookies.
+ipb_member_id = ""
+ipb_pass_hash = ""
+igneous = ""
+# Optional but recommended
+sk = ""
+
+[display]
+# Show Japanese title when available
+show_japanese_title = true

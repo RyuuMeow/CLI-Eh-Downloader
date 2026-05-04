@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "goehentai"
+version = "0.1.0"
+description = "CLI-style e-hentai/exhentai gallery downloader"
+requires-python = ">=3.11"
+dependencies = [
+    "httpx[http2]>=0.27",
+    "beautifulsoup4>=4.12",
+    "lxml>=5.0",
+    "rich>=13.0",
+    "prompt-toolkit>=3.0",
+    "questionary>=2.0",
+    "colorama>=0.4.6",
+]
+
+[project.optional-dependencies]
+torrent = ["libtorrent>=2.0"]
+
+[project.scripts]
+goeh = "goehentai.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["goehentai*"]
