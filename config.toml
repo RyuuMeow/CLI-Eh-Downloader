@@ -1,4 +1,4 @@
-# GoEHentai Configuration
+# CLI-Eh-Downloader Configuration
 
 [download]
 download_dir = "./downloads"

@@ -1,4 +1,4 @@
-"""Utility functions for GoEHentai."""
+"""Utility functions for CLI-Eh-Downloader."""
 
 from __future__ import annotations
 

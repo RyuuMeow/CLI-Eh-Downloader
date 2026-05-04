@@ -1,4 +1,4 @@
-"""Data models for GoEHentai."""
+"""Data models for CLI-Eh-Downloader."""
 
 from __future__ import annotations
 
@@ -116,3 +116,21 @@ class DownloadTask:
         if len(title) > 50:
             return title[:47] + "..."
         return title
+
+
+@dataclass
+class SearchPage:
+    """Paginated search results."""
+    results: list[SearchResult]
+    current_page: int = 0
+    total_results: int = 0
+    next_url: str = ""
+    prev_url: str = ""
+
+    @property
+    def has_next(self) -> bool:
+        return bool(self.next_url)
+
+    @property
+    def has_prev(self) -> bool:
+        return bool(self.prev_url)

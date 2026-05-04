@@ -28,23 +28,27 @@ _STATUS_STYLE: dict[TaskStatus, tuple[str, str]] = {
 
 def print_banner() -> None:
     banner = Text.from_markup(
-        "[bold cyan]   ____       _____ _   _            _        _ \n"
-        "  / ___| ___ | ____| | | | ___ _ __ | |_ __ _(_)\n"
-        " | |  _ / _ \\|  _| | |_| |/ _ \\ '_ \\| __/ _` | |\n"
-        " | |_| | (_) | |___|  _  |  __/ | | | || (_| | |\n"
-        "  \\____|\\___/|_____|_| |_|\\___|_| |_|\\__\\__,_|_|[/bold cyan]\n"
+        "[bold cyan]  ___ _    ___    ___ _       ___                  _              _         \n"
+        " / __| |  |_ _|__| __| |_ ___|   \\ _____ __ ___ _ | |___  __ _ __| |___ _ _ \n"
+        "| (__| |__ | |___| _|| ' \\___| |) / _ \\ V  V / ' \\| / _ \\/ _` / _` / -_) '_|\n"
+        " \\___|____|___|  |___|_||_|  |___/\\___/\\_/\\_/|_||_|_\\___/\\__,_\\__,_\\___|_|[/bold cyan]\n"
     )
     panel = Panel(
         banner,
-        subtitle="[dim]Type [bold]help[/bold] for commands[/dim]",
+        subtitle="Type [bold]help[/bold] for commands",
         border_style="cyan",
     )
     console.print(panel)
 
     if HAS_LIBTORRENT:
-        console.print("  [green]✓[/green] libtorrent available — embedded torrent downloads enabled")
+        console.print("  [dim][green]✓[/green] libtorrent available — embedded torrent downloads enabled[/dim]")
     else:
-        console.print("  [yellow]![/yellow] libtorrent not found — torrents saved as .torrent files")
+        console.print("  [dim][yellow]![/yellow] libtorrent not found — torrents will be opened with system default client[/dim]")
+    console.print()
+
+    console.print("  ready to go.")
+    console.print("  — paste a url to start")
+    console.print("  — or type [cyan]search <keyword>[/cyan] to find something")
     console.print()
 
 
@@ -142,6 +146,7 @@ def print_help() -> None:
         ("config",                "Interactive config editor"),
         ("config show",           "Show current configuration"),
         ("config set <key> <val>","Update a config value"),
+        ("github / repo",         "Open GitHub repository in browser"),
         ("clear",                 "Clear screen"),
         ("help / h",              "Show this help"),
         ("quit / q",              "Exit (waits for active downloads)"),

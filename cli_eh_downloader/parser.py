@@ -9,7 +9,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 
 from .client import EHClient
-from .models import GalleryImage, GalleryInfo, SearchResult, SiteType, TorrentInfo
+from .models import GalleryImage, GalleryInfo, SearchPage, SearchResult, SiteType, TorrentInfo
 from .utils import build_torrent_page_url, get_base_url, parse_gallery_url
 
 log = logging.getLogger(__name__)
@@ -217,25 +217,53 @@ async def search_galleries(
     query: str,
     site: SiteType = SiteType.E_HENTAI,
     page: int = 0,
-) -> list[SearchResult]:
+    url_override: str = "",
+) -> SearchPage:
     """Search for galleries on e-hentai / exhentai.
 
-    Returns a list of SearchResult from the search results page.
+    Returns a SearchPage with results and pagination info.
+    Use url_override to navigate via next/prev cursor URLs.
     """
     import urllib.parse
 
-    base = get_base_url(site)
-    encoded = urllib.parse.quote(query)
-    url = f"{base}/?f_search={encoded}&page={page}"
+    if url_override:
+        url = url_override
+    else:
+        base = get_base_url(site)
+        encoded = urllib.parse.quote(query)
+        url = f"{base}/?f_search={encoded}"
 
     response = await client.get(url)
     soup = BeautifulSoup(response.text, "lxml")
     results: list[SearchResult] = []
 
+    # --- Parse total results from "Found about N results." ---
+    total_results = 0
+    searchtext = soup.select_one("div.searchtext")
+    if searchtext:
+        st_text = searchtext.get_text(strip=True)
+        count_match = re.search(r"([\d,]+)\s*results", st_text)
+        if count_match:
+            total_results = int(count_match.group(1).replace(",", ""))
+
+    # --- Parse next/prev URLs from div.searchnav ---
+    next_url = ""
+    prev_url = ""
+    nav = soup.select_one("div.searchnav")
+    if nav:
+        next_link = nav.select_one("a#unext")
+        if next_link and next_link.get("href"):
+            next_url = next_link["href"]
+        prev_link = nav.select_one("a#uprev")
+        if prev_link and prev_link.get("href"):
+            prev_url = prev_link["href"]
+
+    # --- Parse gallery rows ---
     table = soup.select_one("table.itg")
     if not table:
         log.warning("No results table found for query: %s", query)
-        return results
+        return SearchPage(results=results, current_page=page, total_results=total_results,
+                          next_url=next_url, prev_url=prev_url)
 
     rows = table.select("tr")
     for tr in rows[1:]:  # skip header row
@@ -278,7 +306,6 @@ async def search_galleries(
             uploader = ""
             if up_td:
                 up_text = up_td.get_text(" ", strip=True)
-                # Remove the pages part
                 up_text = re.sub(r"\d+\s*pages?", "", up_text).strip()
                 uploader = up_text
 
@@ -296,5 +323,8 @@ async def search_galleries(
         except Exception:
             continue
 
-    log.info("Search '%s' returned %d results", query, len(results))
-    return results
+    log.info("Search '%s' page %d returned %d results (total: %d)",
+             query, page, len(results), total_results)
+    return SearchPage(results=results, current_page=page, total_results=total_results,
+                      next_url=next_url, prev_url=prev_url)
+

@@ -48,7 +48,7 @@ class Shell:
                 while True:
                     try:
                         raw = self._session.prompt(
-                            HTML("<ansigreen><b>goeh</b></ansigreen><ansigray>&gt; </ansigray>")
+                            HTML("<ansigreen><b>meow </b></ansigreen><ansigray>&gt; </ansigray>")
                         )
                         line = raw.strip()
                         if not line:
@@ -116,6 +116,11 @@ class Shell:
             case "history":
                 self._cmd_history(args)
 
+            case "github" | "repo":
+                import webbrowser
+                webbrowser.open("https://github.com/RyuuMeow/CLI-Eh-Downloader")
+                print_success("Opened GitHub repo in browser.")
+
             case "quit" | "q" | "exit":
                 raise EOFError()
 
@@ -147,14 +152,17 @@ class Shell:
         else:
             self._interactive_download(url, gallery, torrents)
 
-    def _auto_download(self, url, gallery, torrents):
-        """Auto-select best method and start download without prompts."""
+    def _auto_download(self, url, gallery, torrents) -> bool:
+        """Auto-select best method and start download without prompts. Returns True."""
         from .torrent import HAS_LIBTORRENT
 
-        if torrents and self.config.prefer_torrent:
-            best = torrents[0]  # sorted by seeds
+        # Filter out 0-seed torrents — they are dead and not useful
+        viable_torrents = [t for t in torrents if t.seeds > 0]
 
-            if HAS_LIBTORRENT and best.seeds > 0:
+        if viable_torrents and self.config.prefer_torrent:
+            best = viable_torrents[0]  # sorted by seeds
+
+            if HAS_LIBTORRENT:
                 console.print(f"  [green]Using torrent[/green] (Seeds: {best.seeds})")
                 task = self.manager.add_task(
                     url,
@@ -174,10 +182,13 @@ class Shell:
                 else:
                     # Fallback to direct if torrent save failed
                     self._start_direct(url, gallery)
-            return
+            return True
 
-        # No torrent available → direct download
+        # No viable torrent (all 0 seeds or none available) → direct download
+        if torrents and not viable_torrents:
+            print_info("All torrents have 0 seeds, using direct download.")
         self._start_direct(url, gallery)
+        return True
 
     def _start_direct(self, url, gallery):
         """Start a direct image download task."""
@@ -226,7 +237,7 @@ class Shell:
 
         if idx is None or idx == -1:
             print_info("Cancelled.")
-            return
+            return False
 
         choice = options[idx]
         method = choice["method"]
@@ -239,7 +250,7 @@ class Shell:
                 from .downloader import save_torrent_metadata
                 save_torrent_metadata(gallery, torrent_path, self.config)
                 print_success("Torrent saved & opened. Download via torrent client.")
-            return
+            return True
 
         task = self.manager.add_task(
             url,
@@ -249,6 +260,7 @@ class Shell:
             on_update=self._on_task_update,
         )
         print_task_added(task)
+        return True
 
     def _save_and_open_torrent(self, torrent_info) -> str | None:
         """Download .torrent file and open with system torrent client. Returns path or None."""
@@ -297,69 +309,144 @@ class Shell:
     def _cmd_search(self, query: str) -> None:
         import questionary
 
+        current_page = 0
+        downloaded_gids: set[int] = set()
+
+        # Fetch first page
         console.print(f"  [cyan]Searching: {query}...[/cyan]")
         try:
-            results = self.manager.search_sync(query)
+            search_page = self.manager.search_sync(query, page=current_page)
         except Exception as e:
             print_error(f"Search failed: {e}")
             return
 
-        if not results:
+        if not search_page.results:
             print_info("No results found.")
             return
 
-        console.print(f"  [green]Found {len(results)} results[/green]\n")
-
-        downloaded_gids: set[int] = set()
-
         while True:
+            results = search_page.results
+            total = search_page.total_results
+
             console.clear()
             print_banner()
-            console.print(f"  [cyan]Searching: {query}...[/cyan]")
-            console.print(f"  [green]Found {len(results)} results[/green]\n")
 
-            # Build choices with downloaded markers
+            # Header with pagination info
+            total_str = f"{total:,}" if total else f"{len(results)}+"
+            page_display = current_page + 1
+            console.print(f"  [cyan]Search: {query}[/cyan]  |  [green]{total_str} results[/green]  |  [yellow]Page {page_display}[/yellow]\n")
+
+            # Build choices
             choices = []
             for i, r in enumerate(results):
                 prefix = "\u2713 " if r.gid in downloaded_gids else "  "
                 label = (
-                    f"{prefix}[{r.category}] {r.title[:65]}"
+                    f"{prefix}[{r.category}] {r.title[:60]}"
                     f"  |  {r.pages}p  |  {r.uploader}"
                 )
                 choices.append(questionary.Choice(title=label, value=i))
 
-            choices.append(questionary.Choice(title="\u2190 Back to shell", value=-1))
+            # Navigation options
+            _NEXT = -2
+            _PREV = -3
+            _BACK = -1
+
+            if search_page.has_next:
+                choices.append(questionary.Choice(title=f"\u27a1 Next page (page {page_display + 1})", value=_NEXT))
+            if search_page.has_prev:
+                choices.append(questionary.Choice(title=f"\u2b05 Previous page (page {page_display - 1})", value=_PREV))
+            choices.append(questionary.Choice(title="\u2190 Back to shell", value=_BACK))
 
             try:
                 selected_idx = questionary.select(
-                    f"Search: {query} ({len(results)} results)",
+                    f"Page {page_display}  ({len(results)} on this page)",
                     choices=choices,
-                    instruction="(\u2191\u2193 select, Enter download, Ctrl-C back)",
+                    instruction="(\u2191\u2193 select, Enter confirm, Ctrl-C back)",
                 ).ask()
             except KeyboardInterrupt:
-                selected_idx = -1
+                selected_idx = _BACK
 
-            if selected_idx is None or selected_idx == -1:
-                print_info("Back to shell.")
+            if selected_idx is None or selected_idx == _BACK:
                 return
 
-            # Download the selected gallery
-            selected = results[selected_idx]
-            console.print(f"\n  [bold]{selected.title}[/bold]")
-            console.print(f"  [dim]{selected.url}[/dim]")
-
-            try:
-                gallery, torrents = self.manager.fetch_info_and_torrents_sync(selected.url)
-            except Exception as e:
-                print_error(f"Failed to fetch: {e}")
+            if selected_idx == _NEXT:
+                current_page += 1
+                console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
+                try:
+                    search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.next_url)
+                except Exception as e:
+                    print_error(f"Failed to load page: {e}")
+                    current_page -= 1
                 continue
 
-            if self.config.auto_select_best:
-                self._auto_download(selected.url, gallery, torrents)
-            else:
-                self._interactive_download(selected.url, gallery, torrents)
+            if selected_idx == _PREV:
+                current_page -= 1
+                console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
+                try:
+                    search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.prev_url)
+                except Exception as e:
+                    print_error(f"Failed to load page: {e}")
+                    current_page += 1
+                continue
 
-            downloaded_gids.add(selected.gid)
+            # Show action menu for selected gallery
+            selected = results[selected_idx]
+            action = self._search_action_menu(selected)
+
+            if action == "download":
+                console.print(f"  [cyan]Fetching gallery info...[/cyan]")
+                try:
+                    gallery, torrents = self.manager.fetch_info_and_torrents_sync(selected.url)
+                except Exception as e:
+                    print_error(f"Failed to fetch: {e}")
+                    continue
+
+                title = gallery.title_jpn or gallery.title
+                console.print(f"  [bold]{title}[/bold]")
+
+                if self.config.auto_select_best:
+                    started = self._auto_download(selected.url, gallery, torrents)
+                else:
+                    started = self._interactive_download(selected.url, gallery, torrents)
+
+                if started:
+                    downloaded_gids.add(selected.gid)
+
+    def _search_action_menu(self, result: SearchResult) -> str:
+        """Show action menu for a selected search result. Returns 'download' or 'back'."""
+        import webbrowser
+        import questionary
+
+        console.print(f"\n  [bold]{result.title}[/bold]")
+        console.print(f"  [dim]{result.url}[/dim]")
+        if result.pages:
+            console.print(f"  [dim]{result.category}  |  {result.pages} pages  |  {result.uploader}[/dim]\n")
+
+        action_choices = [
+            questionary.Choice(title="\u2b07 Download", value=0),
+            questionary.Choice(title="\U0001f310 Open in browser", value=1),
+            questionary.Choice(title="\u2190 Back to results", value=-1),
+        ]
+
+        while True:
+            try:
+                action = questionary.select(
+                    "Action:",
+                    choices=action_choices,
+                    instruction="",
+                ).ask()
+            except KeyboardInterrupt:
+                action = -1
+
+            if action is None or action == -1:
+                return "back"
+
+            if action == 1:
+                webbrowser.open(result.url)
+                print_success("Opened in browser.")
+                continue  # stay in menu
+
+            return "download"
 
     def _cmd_status(self, args: list[str]) -> None:
         if args and args[0] in ("-clear", "--clear", "clear"):

@@ -1,4 +1,4 @@
-"""Torrent download support for GoEHentai.
+"""Torrent download support for CLI-Eh-Downloader.
 
 Attempts to use libtorrent for embedded torrent downloading.
 Falls back to saving the .torrent file if libtorrent is not available.

@@ -1,4 +1,4 @@
-"""CLI entry point for GoEHentai."""
+"""CLI entry point for CLI-Eh-Downloader."""
 
 from __future__ import annotations
 
@@ -82,14 +82,14 @@ def main() -> None:
 
 def _print_usage() -> None:
     print(
-        "GoEHentai — CLI Gallery Downloader\n"
+        "CLI-Eh-Downloader — CLI Gallery Downloader\n"
         "\n"
         "Usage:\n"
-        "  goeh                          Start interactive shell\n"
-        "  goeh <url> [url2] ...         Download galleries and exit\n"
-        "  goeh --config <path>          Use a custom config file\n"
-        "  goeh --verbose / -v           Show detailed log messages\n"
-        "  goeh --help                   Show this help\n"
+        "  ehdl                          Start interactive shell\n"
+        "  ehdl <url> [url2] ...         Download galleries and exit\n"
+        "  ehdl --config <path>          Use a custom config file\n"
+        "  ehdl --verbose / -v           Show detailed log messages\n"
+        "  ehdl --help                   Show this help\n"
         "\n"
         "Interactive commands:\n"
         "  add <url>   Add a download task\n"

@@ -1,4 +1,4 @@
-"""Configuration management for GoEHentai."""
+"""Configuration management for CLI-Eh-Downloader."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from typing import Any
 CONFIG_FILENAME = "config.toml"
 DEFAULT_CONFIG_PATHS = [
     Path.cwd() / CONFIG_FILENAME,
-    Path.home() / ".config" / "goehentai" / CONFIG_FILENAME,
+    Path.home() / ".config" / "cli-eh-downloader" / CONFIG_FILENAME,
 ]
 
 
@@ -59,7 +59,7 @@ class Config:
         save_path.parent.mkdir(parents=True, exist_ok=True)
 
         lines = [
-            "# GoEHentai Configuration\n",
+            "# CLI-Eh-Downloader Configuration\n",
             "\n[download]\n",
             f'download_dir = "{self.download_dir}"\n',
             f"max_parallel = {self.max_parallel}\n",
