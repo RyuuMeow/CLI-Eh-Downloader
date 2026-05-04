@@ -1,4 +1,4 @@
-[English](README.md) | [繁體中文](README_zh.md)
+[English](README.md) | [繁體中文](README_zh.md) | [简体中文](README_zh_cn.md)
 
 # CLI-Eh-Downloader
 
@@ -24,12 +24,19 @@ A command-line based gallery downloader for E-Hentai and ExHentai with an intera
 - **Python 3.11** or higher.
 - (Optional) `libtorrent` for embedded torrent downloading. If not installed, the application will save the `.torrent` file and attempt to open it with your system's default client (e.g., qBittorrent).
 
+### Clone the Repository
+
+First, clone this repository to your local machine:
+```bash
+git clone https://github.com/RyuuMeow/CLI-Eh-Downloader.git
+cd CLI-Eh-Downloader
+```
+
 ### Quick Start (Windows)
 
-1. Clone or download this repository.
-2. Double-click **`CLI-Eh-Downloader.bat`**.
-3. If it's your first time, the script will prompt you to automatically create a virtual environment (`venv`) and install all required dependencies. Type `Y` to confirm.
-4. The interactive shell will launch automatically.
+1. Double-click **`CLI-Eh-Downloader.bat`**.
+2. If it's your first time, the script will prompt you to automatically create a virtual environment (`venv`) and install all required dependencies. Type `Y` to confirm.
+3. The interactive shell will launch automatically.
 
 ### Manual Setup (All Platforms)
 

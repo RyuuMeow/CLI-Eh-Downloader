@@ -1,4 +1,4 @@
-[English](README.md) | [繁體中文](README_zh.md)
+[English](README.md) | [繁體中文](README_zh.md) | [简体中文](README_zh_cn.md)
 
 # CLI-Eh-Downloader
 
@@ -24,12 +24,19 @@
 - **Python 3.11** 或更新版本。
 - （選用）`libtorrent` 以支援內建的種子下載功能。若未安裝，程式會將 `.torrent` 檔下載下來，並嘗試使用系統預設的種子客戶端（例如 qBittorrent 等）來進行下載。
 
+### 下載專案 (Clone Repository)
+
+首先，將專案 clone 到你的電腦上：
+```bash
+git clone https://github.com/RyuuMeow/CLI-Eh-Downloader.git
+cd CLI-Eh-Downloader
+```
+
 ### 快速開始 (Windows)
 
-1. 複製或下載此專案至本地端。
-2. 點擊執行 **`CLI-Eh-Downloader.bat`**。
-3. 如果是首次執行，腳本會主動詢問是否要自動建立虛擬環境 (`venv`) 並安裝所有必要的依賴套件。輸入 `Y` 確認。
-4. 安裝完成後，將會自動進入互動式 Shell 介面。
+1. 點擊執行 **`CLI-Eh-Downloader.bat`**。
+2. 如果是首次執行，腳本會主動詢問是否要自動建立虛擬環境 (`venv`) 並安裝所有必要的依賴套件。輸入 `Y` 確認。
+3. 安裝完成後，將會自動進入互動式 Shell 介面。
 
 ### 手動安裝 (所有平台)
 
