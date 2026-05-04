@@ -1,0 +1,19 @@
+# GoEHentai Configuration
+
+[download]
+download_dir = "./downloads"
+max_parallel = 3
+rate_limit_delay = 1.5
+retry_count = 3
+retry_delay = 5.0
+prefer_torrent = true
+auto_select_best = false
+
+[cookies]
+ipb_member_id = ""
+ipb_pass_hash = ""
+igneous = ""
+sk = ""
+
+[display]
+show_japanese_title = true
