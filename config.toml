@@ -18,3 +18,10 @@ sk = ""
 [display]
 show_japanese_title = true
 debug_mode = false
+
+[search]
+bulk_mode_default = false
+open_result_website_automatically = true
+open_gallery_website_onclick = false
+download_gallery_onclick = false
+no_sub_menu = false

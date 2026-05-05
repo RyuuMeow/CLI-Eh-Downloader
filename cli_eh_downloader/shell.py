@@ -320,14 +320,16 @@ class Shell:
     # ------------------------------------------------------------------
 
     def _cmd_search(self, query: str) -> None:
+        import urllib.parse
         import webbrowser
 
         current_page = 0
         downloaded_gids: set[int] = set()
         opened_gids: set[int] = set()
-        bulk_mode = False
+        bulk_mode = self.config.search_bulk_mode_default
         selected_results: dict[int, SearchResult] = {}
         cursor_choice: tuple[str, int | None] = ("result", 0)
+        current_search_url = f"https://e-hentai.org/?f_search={urllib.parse.quote(query)}"
 
         # Fetch first page
         console.print(f"  [cyan]Searching: {query}...[/cyan]")
@@ -340,6 +342,8 @@ class Shell:
         if not search_page.results:
             print_info("No results found.")
             return
+        if self.config.search_open_result_website_automatically:
+            webbrowser.open(current_search_url)
 
         while True:
             results = search_page.results
@@ -376,25 +380,38 @@ class Shell:
                 return
 
             if action == "next":
+                next_url = search_page.next_url
                 current_page += 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
-                    search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.next_url)
+                    search_page = self.manager.search_sync(query, page=current_page, url_override=next_url)
+                    current_search_url = next_url
                     cursor_choice = ("result", 0)
+                    if self.config.search_open_result_website_automatically:
+                        webbrowser.open(current_search_url)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page -= 1
                 continue
 
             if action == "prev":
+                prev_url = search_page.prev_url
                 current_page -= 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
-                    search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.prev_url)
+                    search_page = self.manager.search_sync(query, page=current_page, url_override=prev_url)
+                    current_search_url = prev_url
                     cursor_choice = ("result", 0)
+                    if self.config.search_open_result_website_automatically:
+                        webbrowser.open(current_search_url)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page += 1
+                continue
+
+            if action == "open_search_page":
+                webbrowser.open(current_search_url)
+                print_success("Opened search page in browser.")
                 continue
 
             if action == "toggle_bulk":
@@ -419,23 +436,20 @@ class Shell:
 
             # Show action menu for selected gallery
             selected = results[selected_idx]
+            if self.config.search_open_gallery_website_onclick:
+                webbrowser.open(selected.url)
+                opened_gids.add(selected.gid)
+
+            if self.config.search_download_gallery_onclick:
+                self._search_download_result(selected, downloaded_gids)
+
+            if self.config.search_no_sub_menu:
+                continue
+
             action = self._search_action_menu(selected, opened_gids)
 
             if action == "download":
-                console.print(f"  [cyan]Fetching gallery info...[/cyan]")
-                try:
-                    gallery, torrents = self.manager.fetch_info_and_torrents_sync(selected.url)
-                except Exception as e:
-                    print_error(f"Failed to fetch: {e}")
-                    continue
-
-                title = gallery.title_jpn or gallery.title
-                console.print(f"  [bold]{title}[/bold]")
-
-                started = self._default_download(selected.url, gallery, torrents)
-
-                if started:
-                    downloaded_gids.add(selected.gid)
+                self._search_download_result(selected, downloaded_gids)
 
     def _search_select(
         self,
@@ -456,7 +470,7 @@ class Shell:
         from questionary import utils
         from questionary.constants import DEFAULT_QUESTION_PREFIX, DEFAULT_SELECTED_POINTER
         from questionary.prompts import common
-        from questionary.prompts.common import Choice, InquirerControl
+        from questionary.prompts.common import Choice, InquirerControl, Separator
         from questionary.question import Question
         from questionary.styles import merge_styles_default
 
@@ -475,10 +489,11 @@ class Shell:
         ]
         choices = [*result_choices]
 
+        choices.append(Separator("-------------------"))
         if has_next:
-            choices.append(Choice(title=f"\u27a1 Next page (page {page_display + 1})", value=("next", None)))
+            choices.append(Choice(title=f"\u27a1\ufe0f Next page (page {page_display + 1})", value=("next", None)))
         if has_prev:
-            choices.append(Choice(title=f"\u2b05 Previous page (page {page_display - 1})", value=("prev", None)))
+            choices.append(Choice(title=f"\u2b05\ufe0f Previous page (page {page_display - 1})", value=("prev", None)))
 
         bulk_toggle_choice = Choice(title="", value=("toggle_bulk", None))
         select_page_choice = Choice(title="Select All (this page)", value=("select_page", None))
@@ -486,14 +501,21 @@ class Shell:
         bulk_download_choice = Choice(title="", value=("bulk_download", None))
         bulk_browser_choice = Choice(title="", value=("bulk_browser", None))
 
+        choices.append(Separator("-------------------"))
+        choices.append(Choice(title="\U0001f310 Open search page in browser", value=("open_search_page", None)))
         choices.append(bulk_toggle_choice)
         if bulk_mode:
+            choices.append(Separator("-------------------"))
             choices.extend([
                 select_page_choice,
-                unselect_page_choice,
+                unselect_page_choice
+            ])
+            choices.append(Separator("-------------------"))
+            choices.extend([
                 bulk_download_choice,
                 bulk_browser_choice,
             ])
+        choices.append(Separator("-------------------"))
         choices.append(Choice(title="\u2190 Back to shell", value=("back", None)))
 
         def sync_titles() -> None:
@@ -509,14 +531,10 @@ class Shell:
             selected_count = len(selected_results)
             if selected_count:
                 bulk_download_choice.title = f"Bulk Download ({selected_count} selected)"
-                bulk_download_choice.disabled = None
                 bulk_browser_choice.title = f"Bulk Open in browser ({selected_count} selected)"
-                bulk_browser_choice.disabled = None
             else:
-                bulk_download_choice.title = "Bulk Download (select at least one)"
-                bulk_download_choice.disabled = "Select at least one result"
-                bulk_browser_choice.title = "Bulk Open in browser (select at least one)"
-                bulk_browser_choice.disabled = "Select at least one result"
+                bulk_download_choice.title = [("fg:ansibrightblack", "Bulk Download (select at least one)")]
+                bulk_browser_choice.title = [("fg:ansibrightblack", "Bulk Open in browser (select at least one)")]
 
         sync_titles()
 
@@ -591,6 +609,8 @@ class Shell:
                     selected_results.pop(result.gid, None)
                 sync_titles()
                 event.app.invalidate()
+            elif action in ("bulk_download", "bulk_browser") and not selected_results:
+                event.app.invalidate()
             else:
                 event.app.exit(result=(action, idx))
 
@@ -621,8 +641,6 @@ class Shell:
             marks.append("[x]" if result.gid in selected_results else "[ ]")
         if result.gid in downloaded_gids:
             marks.append("\u2713")
-        if result.gid in opened_gids:
-            marks.append("opened")
         prefix = " ".join(marks)
         if prefix:
             prefix += " "
@@ -639,6 +657,22 @@ class Shell:
         if bulk_mode and result.gid in selected_results:
             return [("fg:ansicyan", label)]
         return label
+
+    def _search_download_result(self, result: SearchResult, downloaded_gids: set[int]) -> bool:
+        console.print(f"  [cyan]Fetching gallery info...[/cyan]")
+        try:
+            gallery, torrents = self.manager.fetch_info_and_torrents_sync(result.url)
+        except Exception as e:
+            print_error(f"Failed to fetch: {e}")
+            return False
+
+        title = gallery.title_jpn or gallery.title
+        console.print(f"  [bold]{title}[/bold]")
+
+        started = self._default_download(result.url, gallery, torrents)
+        if started:
+            downloaded_gids.add(result.gid)
+        return started
 
     def _search_action_menu(self, result: SearchResult, opened_gids: set[int] | None = None) -> str:
         """Show action menu for a selected search result. Returns 'download' or 'back'."""
@@ -1992,7 +2026,16 @@ class Shell:
         import questionary
 
         _BACK = "__BACK__"
-        bool_keys = {"prefer_torrent", "show_japanese_title", "debug_mode"}
+        bool_keys = {
+            "prefer_torrent",
+            "show_japanese_title",
+            "debug_mode",
+            "search_bulk_mode_default",
+            "search_open_result_website_automatically",
+            "search_open_gallery_website_onclick",
+            "search_download_gallery_onclick",
+            "search_no_sub_menu",
+        }
         mode_labels = {
             "auto": "Auto",
             "ask": "Ask",
@@ -2025,6 +2068,16 @@ class Shell:
                     ("ipb_pass_hash", "ipb_pass_hash"),
                     ("igneous", "igneous"),
                     ("sk", "sk"),
+                ],
+            ),
+            (
+                "Search",
+                [
+                    ("search_bulk_mode_default", "Bulk Mode Default"),
+                    ("search_open_result_website_automatically", "Open Result Website Automatically"),
+                    ("search_open_gallery_website_onclick", "Open Gallery Website Onclick"),
+                    ("search_download_gallery_onclick", "Download Gallery Onclick"),
+                    ("search_no_sub_menu", "No Sub-Menu"),
                 ],
             ),
         ]
@@ -2159,6 +2212,11 @@ class Shell:
             ("Cookie", "igneous", ("***" + c.igneous[-4:]) if c.igneous else "[dim]not set[/dim]"),
             ("Cookie", "sk", ("***" + c.sk[-4:]) if c.sk else "[dim]not set[/dim]"),
             ("Cookie", "exhentai_ready", "[green]yes[/green]" if c.has_exhentai_cookies else "[red]no[/red]"),
+            ("Search", "bulk_mode_default", str(c.search_bulk_mode_default)),
+            ("Search", "open_result_website_automatically", str(c.search_open_result_website_automatically)),
+            ("Search", "open_gallery_website_onclick", str(c.search_open_gallery_website_onclick)),
+            ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
+            ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
         ]
 
         for section, key, value in rows:
@@ -2191,6 +2249,16 @@ class Shell:
             "cookie_id": "ipb_member_id",
             "cookie_hash": "ipb_pass_hash",
             "parallel": "max_parallel",
+            "bulk_mode_default": "search_bulk_mode_default",
+            "search_bulk_mode_default": "search_bulk_mode_default",
+            "open_result_website_automatically": "search_open_result_website_automatically",
+            "search_open_result_website_automatically": "search_open_result_website_automatically",
+            "open_gallery_website_onclick": "search_open_gallery_website_onclick",
+            "search_open_gallery_website_onclick": "search_open_gallery_website_onclick",
+            "download_gallery_onclick": "search_download_gallery_onclick",
+            "search_download_gallery_onclick": "search_download_gallery_onclick",
+            "no_sub_menu": "search_no_sub_menu",
+            "search_no_sub_menu": "search_no_sub_menu",
         }
 
         attr = config_map.get(key)
@@ -2215,7 +2283,16 @@ class Shell:
             self.config.default_download_mode = _normalize_download_mode(value)
         elif attr == "auto_select_best":
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
-        elif attr in ("prefer_torrent", "show_japanese_title", "debug_mode"):
+        elif attr in (
+            "prefer_torrent",
+            "show_japanese_title",
+            "debug_mode",
+            "search_bulk_mode_default",
+            "search_open_result_website_automatically",
+            "search_open_gallery_website_onclick",
+            "search_download_gallery_onclick",
+            "search_no_sub_menu",
+        ):
             setattr(self.config, attr, value.lower() in ("true", "1", "yes", "on", "enabled"))
         else:
             setattr(self.config, attr, value)

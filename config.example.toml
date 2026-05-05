@@ -30,3 +30,15 @@ sk = ""
 show_japanese_title = true
 # Enable debug logging
 debug_mode = false
+
+[search]
+# Start search pages in bulk mode
+bulk_mode_default = false
+# Open the search result page in browser after searching and paging
+open_result_website_automatically = false
+# Open gallery website when clicking a search result (single mode only)
+open_gallery_website_onclick = false
+# Start gallery download when clicking a search result (single mode only)
+download_gallery_onclick = false
+# Skip the per-result action menu when clicking a search result (single mode only)
+no_sub_menu = false

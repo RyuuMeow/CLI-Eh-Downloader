@@ -38,6 +38,13 @@ class Config:
     show_japanese_title: bool = True
     debug_mode: bool = False
 
+    # Search settings
+    search_bulk_mode_default: bool = False
+    search_open_result_website_automatically: bool = False
+    search_open_gallery_website_onclick: bool = False
+    search_download_gallery_onclick: bool = False
+    search_no_sub_menu: bool = False
+
     @property
     def auto_select_best(self) -> bool:
         """Legacy compatibility for older config callers."""
@@ -86,6 +93,12 @@ class Config:
             "\n[display]\n",
             f"show_japanese_title = {'true' if self.show_japanese_title else 'false'}\n",
             f"debug_mode = {'true' if self.debug_mode else 'false'}\n",
+            "\n[search]\n",
+            f"bulk_mode_default = {'true' if self.search_bulk_mode_default else 'false'}\n",
+            f"open_result_website_automatically = {'true' if self.search_open_result_website_automatically else 'false'}\n",
+            f"open_gallery_website_onclick = {'true' if self.search_open_gallery_website_onclick else 'false'}\n",
+            f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
+            f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
         ]
         save_path.write_text("".join(lines), encoding="utf-8")
 
@@ -146,6 +159,18 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.show_japanese_title = bool(display["show_japanese_title"])
     if "debug_mode" in display:
         config.debug_mode = bool(display["debug_mode"])
+
+    search = data.get("search", {})
+    if "bulk_mode_default" in search:
+        config.search_bulk_mode_default = bool(search["bulk_mode_default"])
+    if "open_result_website_automatically" in search:
+        config.search_open_result_website_automatically = bool(search["open_result_website_automatically"])
+    if "open_gallery_website_onclick" in search:
+        config.search_open_gallery_website_onclick = bool(search["open_gallery_website_onclick"])
+    if "download_gallery_onclick" in search:
+        config.search_download_gallery_onclick = bool(search["download_gallery_onclick"])
+    if "no_sub_menu" in search:
+        config.search_no_sub_menu = bool(search["no_sub_menu"])
 
 
 def _normalize_download_mode(value: str) -> str:
