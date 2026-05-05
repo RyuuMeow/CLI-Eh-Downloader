@@ -154,10 +154,7 @@ class Shell:
         title = gallery.title_jpn or gallery.title
         console.print(f"  [bold]{title}[/bold]")
 
-        if self.config.auto_select_best:
-            self._auto_download(url, gallery, torrents)
-        else:
-            self._interactive_download(url, gallery, torrents)
+        self._default_download(url, gallery, torrents)
 
     def _auto_download(self, url, gallery, torrents) -> bool:
         """Auto-select best method and start download without prompts. Returns True."""
@@ -206,6 +203,15 @@ class Shell:
             on_update=self._on_task_update,
         )
         print_task_added(task)
+        return True
+
+    def _default_download(self, url, gallery, torrents) -> bool:
+        mode = self.config.default_download_mode
+        if mode == "direct":
+            return self._start_direct(url, gallery)
+        if mode == "ask":
+            return self._interactive_download(url, gallery, torrents)
+        return self._auto_download(url, gallery, torrents)
 
     def _interactive_download(self, url, gallery, torrents):
         """Show interactive selector for download method."""
@@ -314,10 +320,14 @@ class Shell:
     # ------------------------------------------------------------------
 
     def _cmd_search(self, query: str) -> None:
-        import questionary
+        import webbrowser
 
         current_page = 0
         downloaded_gids: set[int] = set()
+        opened_gids: set[int] = set()
+        bulk_mode = False
+        selected_results: dict[int, SearchResult] = {}
+        cursor_choice: tuple[str, int | None] = ("result", 0)
 
         # Fetch first page
         console.print(f"  [cyan]Searching: {query}...[/cyan]")
@@ -343,62 +353,73 @@ class Shell:
             page_display = current_page + 1
             console.print(f"  [cyan]Search: {query}[/cyan]  |  [green]{total_str} results[/green]  |  [yellow]Page {page_display}[/yellow]\n")
 
-            # Build choices
-            choices = []
-            for i, r in enumerate(results):
-                prefix = "\u2713 " if r.gid in downloaded_gids else "  "
-                label = (
-                    f"{prefix}[{r.category}] {r.title[:60]}"
-                    f"  |  {r.pages}p  |  {r.uploader}"
-                )
-                choices.append(questionary.Choice(title=label, value=i))
+            selected_action = self._search_select(
+                f"Page {page_display}  ({len(results)} on this page)",
+                results,
+                downloaded_gids,
+                opened_gids,
+                selected_results,
+                bulk_mode,
+                search_page.has_next,
+                search_page.has_prev,
+                page_display,
+                cursor_choice,
+            )
 
-            # Navigation options
-            _NEXT = -2
-            _PREV = -3
-            _BACK = -1
+            if selected_action is None:
+                selected_action = ("back", None)
 
-            if search_page.has_next:
-                choices.append(questionary.Choice(title=f"\u27a1 Next page (page {page_display + 1})", value=_NEXT))
-            if search_page.has_prev:
-                choices.append(questionary.Choice(title=f"\u2b05 Previous page (page {page_display - 1})", value=_PREV))
-            choices.append(questionary.Choice(title="\u2190 Back to shell", value=_BACK))
+            action, selected_idx = selected_action
+            cursor_choice = selected_action
 
-            try:
-                selected_idx = questionary.select(
-                    f"Page {page_display}  ({len(results)} on this page)",
-                    choices=choices,
-                    instruction="(\u2191\u2193 select, Enter confirm, Ctrl-C back)",
-                ).ask()
-            except KeyboardInterrupt:
-                selected_idx = _BACK
-
-            if selected_idx is None or selected_idx == _BACK:
+            if action == "back":
                 return
 
-            if selected_idx == _NEXT:
+            if action == "next":
                 current_page += 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
                     search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.next_url)
+                    cursor_choice = ("result", 0)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page -= 1
                 continue
 
-            if selected_idx == _PREV:
+            if action == "prev":
                 current_page -= 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
                     search_page = self.manager.search_sync(query, page=current_page, url_override=search_page.prev_url)
+                    cursor_choice = ("result", 0)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page += 1
                 continue
 
+            if action == "toggle_bulk":
+                bulk_mode = not bulk_mode
+                continue
+
+            if action == "bulk_browser":
+                opened = 0
+                for result in selected_results.values():
+                    webbrowser.open(result.url)
+                    opened_gids.add(result.gid)
+                    opened += 1
+                print_success(f"Opened {opened} selected result(s) in browser.")
+                continue
+
+            if action == "bulk_download":
+                self._search_bulk_download(list(selected_results.values()), downloaded_gids)
+                continue
+
+            if action != "result" or selected_idx is None:
+                continue
+
             # Show action menu for selected gallery
             selected = results[selected_idx]
-            action = self._search_action_menu(selected)
+            action = self._search_action_menu(selected, opened_gids)
 
             if action == "download":
                 console.print(f"  [cyan]Fetching gallery info...[/cyan]")
@@ -411,15 +432,215 @@ class Shell:
                 title = gallery.title_jpn or gallery.title
                 console.print(f"  [bold]{title}[/bold]")
 
-                if self.config.auto_select_best:
-                    started = self._auto_download(selected.url, gallery, torrents)
-                else:
-                    started = self._interactive_download(selected.url, gallery, torrents)
+                started = self._default_download(selected.url, gallery, torrents)
 
                 if started:
                     downloaded_gids.add(selected.gid)
 
-    def _search_action_menu(self, result: SearchResult) -> str:
+    def _search_select(
+        self,
+        title: str,
+        results: list[SearchResult],
+        downloaded_gids: set[int],
+        opened_gids: set[int],
+        selected_results: dict[int, SearchResult],
+        bulk_mode: bool,
+        has_next: bool,
+        has_prev: bool,
+        page_display: int,
+        cursor_choice: tuple[str, int | None],
+    ) -> tuple[str, int | None] | None:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from questionary import utils
+        from questionary.constants import DEFAULT_QUESTION_PREFIX, DEFAULT_SELECTED_POINTER
+        from questionary.prompts import common
+        from questionary.prompts.common import Choice, InquirerControl
+        from questionary.question import Question
+        from questionary.styles import merge_styles_default
+
+        result_choices = [
+            Choice(
+                title=self._search_choice_title(
+                    result,
+                    downloaded_gids,
+                    opened_gids,
+                    selected_results,
+                    bulk_mode,
+                ),
+                value=("result", i),
+            )
+            for i, result in enumerate(results)
+        ]
+        choices = [*result_choices]
+
+        if has_next:
+            choices.append(Choice(title=f"\u27a1 Next page (page {page_display + 1})", value=("next", None)))
+        if has_prev:
+            choices.append(Choice(title=f"\u2b05 Previous page (page {page_display - 1})", value=("prev", None)))
+
+        bulk_toggle_choice = Choice(title="", value=("toggle_bulk", None))
+        select_page_choice = Choice(title="Select All (this page)", value=("select_page", None))
+        unselect_page_choice = Choice(title="Unselect All (this page)", value=("unselect_page", None))
+        bulk_download_choice = Choice(title="", value=("bulk_download", None))
+        bulk_browser_choice = Choice(title="", value=("bulk_browser", None))
+
+        choices.append(bulk_toggle_choice)
+        if bulk_mode:
+            choices.extend([
+                select_page_choice,
+                unselect_page_choice,
+                bulk_download_choice,
+                bulk_browser_choice,
+            ])
+        choices.append(Choice(title="\u2190 Back to shell", value=("back", None)))
+
+        def sync_titles() -> None:
+            for i, result in enumerate(results):
+                result_choices[i].title = self._search_choice_title(
+                    result,
+                    downloaded_gids,
+                    opened_gids,
+                    selected_results,
+                    bulk_mode,
+                )
+            bulk_toggle_choice.title = f"Bulk Mode: {'On' if bulk_mode else 'Off'}"
+            selected_count = len(selected_results)
+            if selected_count:
+                bulk_download_choice.title = f"Bulk Download ({selected_count} selected)"
+                bulk_download_choice.disabled = None
+                bulk_browser_choice.title = f"Bulk Open in browser ({selected_count} selected)"
+                bulk_browser_choice.disabled = None
+            else:
+                bulk_download_choice.title = "Bulk Download (select at least one)"
+                bulk_download_choice.disabled = "Select at least one result"
+                bulk_browser_choice.title = "Bulk Open in browser (select at least one)"
+                bulk_browser_choice.disabled = "Select at least one result"
+
+        sync_titles()
+
+        values = {choice.value for choice in choices}
+        if cursor_choice[0] == "result" and cursor_choice[1] is not None and results:
+            cursor_choice = ("result", min(cursor_choice[1], len(results) - 1))
+        if cursor_choice not in values:
+            cursor_choice = ("result", 0)
+
+        ic = InquirerControl(
+            choices,
+            default=None,
+            pointer=DEFAULT_SELECTED_POINTER,
+            use_indicator=False,
+            use_shortcuts=False,
+            show_selected=False,
+            show_description=True,
+            use_arrow_keys=True,
+            initial_choice=cursor_choice,
+        )
+
+        def get_prompt_tokens():
+            return [
+                ("class:qmark", DEFAULT_QUESTION_PREFIX),
+                ("class:question", f" {title} "),
+                ("class:instruction", "(Enter confirm, Ctrl-C back)"),
+            ]
+
+        layout = common.create_inquirer_layout(ic, get_prompt_tokens)
+        bindings = KeyBindings()
+
+        @bindings.add(Keys.ControlQ, eager=True)
+        @bindings.add(Keys.ControlC, eager=True)
+        def _(event):
+            event.app.exit(result=None)
+
+        def move_cursor_down(event):
+            ic.select_next()
+            while not ic.is_selection_valid():
+                ic.select_next()
+
+        def move_cursor_up(event):
+            ic.select_previous()
+            while not ic.is_selection_valid():
+                ic.select_previous()
+
+        bindings.add(Keys.Down, eager=True)(move_cursor_down)
+        bindings.add(Keys.Up, eager=True)(move_cursor_up)
+        bindings.add("j", eager=True)(move_cursor_down)
+        bindings.add("k", eager=True)(move_cursor_up)
+        bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
+        bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+        @bindings.add(Keys.ControlM, eager=True)
+        def set_answer(event):
+            action, idx = ic.get_pointed_at().value
+            if action == "result" and idx is not None and bulk_mode:
+                result = results[idx]
+                if result.gid in selected_results:
+                    selected_results.pop(result.gid, None)
+                else:
+                    selected_results[result.gid] = result
+                sync_titles()
+                event.app.invalidate()
+            elif action == "select_page":
+                for result in results:
+                    selected_results[result.gid] = result
+                sync_titles()
+                event.app.invalidate()
+            elif action == "unselect_page":
+                for result in results:
+                    selected_results.pop(result.gid, None)
+                sync_titles()
+                event.app.invalidate()
+            else:
+                event.app.exit(result=(action, idx))
+
+        @bindings.add(Keys.Any)
+        def other(event):
+            pass
+
+        question = Question(
+            Application(
+                layout=layout,
+                key_bindings=bindings,
+                style=merge_styles_default([None]),
+                **utils.used_kwargs({}, Application.__init__),
+            )
+        )
+        return question.ask()
+
+    def _search_choice_title(
+        self,
+        result: SearchResult,
+        downloaded_gids: set[int],
+        opened_gids: set[int],
+        selected_results: dict[int, SearchResult],
+        bulk_mode: bool,
+    ):
+        marks = []
+        if bulk_mode:
+            marks.append("[x]" if result.gid in selected_results else "[ ]")
+        if result.gid in downloaded_gids:
+            marks.append("\u2713")
+        if result.gid in opened_gids:
+            marks.append("opened")
+        prefix = " ".join(marks)
+        if prefix:
+            prefix += " "
+
+        label = (
+            f"{prefix}[{result.category}] {result.title[:60]}"
+            f"  |  {result.pages}p  |  {result.uploader}"
+        )
+
+        if result.gid in downloaded_gids:
+            return [("fg:ansigreen", label)]
+        if result.gid in opened_gids:
+            return [("fg:ansibrightblack", label)]
+        if bulk_mode and result.gid in selected_results:
+            return [("fg:ansicyan", label)]
+        return label
+
+    def _search_action_menu(self, result: SearchResult, opened_gids: set[int] | None = None) -> str:
         """Show action menu for a selected search result. Returns 'download' or 'back'."""
         import webbrowser
         import questionary
@@ -450,10 +671,66 @@ class Shell:
 
             if action == 1:
                 webbrowser.open(result.url)
+                if opened_gids is not None:
+                    opened_gids.add(result.gid)
                 print_success("Opened in browser.")
                 continue  # stay in menu
 
             return "download"
+
+    def _search_bulk_download(self, results: list[SearchResult], downloaded_gids: set[int]) -> None:
+        import questionary
+
+        if not results:
+            print_info("No selected results.")
+            return
+
+        try:
+            mode = questionary.select(
+                f"Bulk download ({len(results)} selected):",
+                choices=[
+                    questionary.Choice(title="Direct download (all)", value="direct"),
+                    questionary.Choice(title="Auto (smart select best method)", value="auto"),
+                    questionary.Choice(title="Manual select for each", value="manual"),
+                    questionary.Choice(title="Back", value="back"),
+                ],
+                instruction="",
+            ).ask()
+        except KeyboardInterrupt:
+            mode = "back"
+
+        if not mode or mode == "back":
+            return
+
+        started_count = 0
+        failed_count = 0
+        for i, result in enumerate(results, 1):
+            title = result.title[:70] if len(result.title) > 70 else result.title
+            console.print(f"  [bold]({i}/{len(results)}) {title}[/bold]")
+            console.print(f"  [dim]{result.url}[/dim]")
+            console.print("  [cyan]Fetching gallery info...[/cyan]")
+            try:
+                gallery, torrents = self.manager.fetch_info_and_torrents_sync(result.url)
+            except Exception as e:
+                failed_count += 1
+                print_error(f"Failed to fetch: {e}")
+                continue
+
+            if mode == "direct":
+                self._start_direct(result.url, gallery)
+                started = True
+            elif mode == "auto":
+                started = self._auto_download(result.url, gallery, torrents)
+            else:
+                started = self._interactive_download(result.url, gallery, torrents)
+
+            if started:
+                downloaded_gids.add(result.gid)
+                started_count += 1
+
+        print_success(f"Bulk download queued {started_count} result(s).")
+        if failed_count:
+            print_error(f"{failed_count} result(s) failed to queue.")
 
     def _cmd_status(self, args: list[str]) -> None:
         if args and args[0] in ("-clear", "--clear", "clear"):
@@ -893,10 +1170,7 @@ class Shell:
             console.print(f"    [bold]{title}[/bold]")
 
             if cfg.download_mode == BulkDownloadMode.ASK_EACH:
-                if self.config.auto_select_best:
-                    self._auto_download(result.url, gallery, torrents)
-                else:
-                    self._interactive_download(result.url, gallery, torrents)
+                self._default_download(result.url, gallery, torrents)
             elif cfg.download_mode == BulkDownloadMode.DIRECT:
                 self._start_direct(result.url, gallery)
             else:  # AUTO
@@ -922,146 +1196,6 @@ class Shell:
     # History command
     # ------------------------------------------------------------------
 
-    def _cmd_history(self, args: list[str]) -> None:
-        if args and args[0] in ("-clear", "--clear", "clear"):
-            self._history_clear()
-            return
-        self._history_browse()
-
-    def _history_clear(self) -> None:
-        import questionary
-        from .downloader import _get_meta_dir
-
-        meta_dir = _get_meta_dir(self.config)
-        files = list(meta_dir.glob("*.json"))
-        if not files:
-            print_info("History is empty.")
-            return
-
-        confirm = questionary.confirm(
-            f"Delete all {len(files)} history entries?",
-            default=False,
-        ).ask()
-
-        if confirm:
-            for f in files:
-                f.unlink(missing_ok=True)
-            print_success(f"Deleted {len(files)} history entries.")
-        else:
-            print_info("Cancelled.")
-
-    def _history_browse(self) -> None:
-        import json
-        import webbrowser
-        import questionary
-        from .downloader import _get_meta_dir
-
-        meta_dir = _get_meta_dir(self.config)
-        files = sorted(meta_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
-        if not files:
-            print_info("No download history yet.")
-            return
-
-        # Load all entries
-        entries = []
-        for f in files:
-            try:
-                data = json.loads(f.read_text(encoding="utf-8"))
-                data["_file"] = f
-                entries.append(data)
-            except Exception:
-                continue
-
-        if not entries:
-            print_info("No valid history entries.")
-            return
-
-        # Build choice list
-        choices = []
-        for i, e in enumerate(entries):
-            title = e.get("title_jpn") or e.get("title", "?")
-            method = e.get("method", "direct")
-            date = e.get("downloaded_at", "")[:10]
-            method_icon = "\U0001f9f2" if "torrent" in method else "\U0001f310"  # 🧲 or 🌐
-            label = f"{method_icon} [{date}] {title[:60]}"
-            choices.append(questionary.Choice(title=label, value=i))
-
-        choices.append(questionary.Choice(title="\u2190 Back", value=-1))
-
-        while True:
-            try:
-                idx = questionary.select(
-                    f"Download History ({len(entries)} entries)",
-                    choices=choices,
-                    instruction="(\u2191\u2193 select, Enter actions, Ctrl-C back)",
-                ).ask()
-            except KeyboardInterrupt:
-                idx = -1
-
-            if idx is None or idx == -1:
-                return
-
-            entry = entries[idx]
-            self._history_actions(entry)
-
-    def _history_actions(self, entry: dict) -> None:
-        import webbrowser
-        import questionary
-
-        title = entry.get("title_jpn") or entry.get("title", "?")
-        url = entry.get("url", "")
-        method = entry.get("method", "direct")
-        date = entry.get("downloaded_at", "")[:19].replace("T", " ")
-
-        console.print(f"\n  [bold]{title}[/bold]")
-        console.print(f"  [dim]{url}[/dim]")
-        console.print(f"  [dim]Method: {method}  |  Date: {date}[/dim]\n")
-
-        # 0=browser, 1=redownload, 2=folder, -1=back
-        action_choices = [
-            questionary.Choice(title="\U0001f310 Open in browser", value=0),
-            questionary.Choice(title="\U0001f504 Re-download (manual select)", value=1),
-        ]
-
-        output_dir = entry.get("output_dir", "")
-        if output_dir:
-            action_choices.append(
-                questionary.Choice(title="\U0001f4c2 Open folder", value=2),
-            )
-
-        action_choices.append(questionary.Choice(title="\u2190 Back", value=-1))
-
-        try:
-            action = questionary.select(
-                "Action:",
-                choices=action_choices,
-                instruction="",
-            ).ask()
-        except KeyboardInterrupt:
-            action = -1
-
-        if action is None or action == -1:
-            return
-
-        if action == 0:  # browser
-            if url:
-                webbrowser.open(url)
-                print_success("Opened in browser.")
-            else:
-                print_error("No URL available.")
-
-        elif action == 1:  # redownload
-            if url:
-                self._redownload(url)
-            else:
-                print_error("No URL available.")
-
-        elif action == 2:  # folder
-            try:
-                os.startfile(output_dir)
-            except Exception:
-                print_error(f"Could not open: {output_dir}")
-
     def _redownload(self, url: str) -> None:
         """Re-download a gallery with interactive selection (always manual)."""
         console.print("  [cyan]Fetching gallery info...[/cyan]")
@@ -1075,54 +1209,752 @@ class Shell:
         console.print(f"  [bold]{title}[/bold]")
         self._interactive_download(url, gallery, torrents)
 
+    def _cmd_history(self, args: list[str]) -> None:
+        keyword = ""
+        bulk = False
+
+        i = 0
+        while i < len(args):
+            arg = args[i].lower()
+            if arg in ("-clear", "--clear", "clear"):
+                self._history_clear()
+                return
+            if arg in ("-bulk", "--bulk", "bulk"):
+                bulk = True
+                i += 1
+                continue
+            if arg in ("-search", "--search", "search"):
+                keyword = " ".join(args[i + 1:]).strip()
+                break
+            i += 1
+
+        if bulk:
+            self._history_bulk(keyword)
+            return
+
+        self._history_browse(keyword)
+
+    def _load_history_entries(self, keyword: str = "") -> list[dict]:
+        import json
+        from .downloader import _get_meta_dir
+
+        meta_dir = _get_meta_dir(self.config)
+        files = sorted(meta_dir.glob("*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+
+        entries = []
+        needle = keyword.casefold().strip()
+        for f in files:
+            try:
+                data = json.loads(f.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+
+            data["_file"] = f
+            if needle and needle not in self._history_search_blob(data):
+                continue
+            entries.append(data)
+
+        return entries
+
+    def _history_search_blob(self, entry: dict) -> str:
+        import json
+
+        parts = [
+            entry.get("title", ""),
+            entry.get("title_jpn", ""),
+            entry.get("url", ""),
+            entry.get("category", ""),
+            entry.get("uploader", ""),
+            entry.get("posted", ""),
+            entry.get("method", ""),
+            json.dumps(entry.get("tags", {}), ensure_ascii=False),
+        ]
+        return " ".join(str(p) for p in parts).casefold()
+
+    def _history_entry_date(self, entry: dict):
+        from datetime import datetime
+
+        downloaded_at = entry.get("downloaded_at", "")
+        if downloaded_at:
+            try:
+                return datetime.fromisoformat(downloaded_at).date()
+            except ValueError:
+                pass
+
+        file_path = entry.get("_file")
+        if file_path:
+            return datetime.fromtimestamp(file_path.stat().st_mtime).date()
+        return None
+
+    def _history_choice_label(self, index: int, entry: dict, selected: bool | None = None) -> str:
+        title = entry.get("title_jpn") or entry.get("title") or "?"
+        method = entry.get("method", "direct")
+        date = entry.get("downloaded_at", "")[:10]
+        badge = "T" if "torrent" in method else "D"
+        mark = ""
+        if selected is not None:
+            mark = "[x] " if selected else "[ ] "
+        return f"{mark}#{index + 1:03d} {badge} [{date}] {title[:60]}"
+
+    def _history_clear(self) -> None:
+        import questionary
+        from datetime import date
+
+        entries = self._load_history_entries()
+        if not entries:
+            print_info("History is empty.")
+            return
+
+        try:
+            mode = questionary.select(
+                f"Clear history ({len(entries)} entries):",
+                choices=[
+                    questionary.Choice(title="Clear all", value="all"),
+                    questionary.Choice(title="Before today", value="before_today"),
+                    questionary.Choice(title="Delete after <index>", value="after_index"),
+                    questionary.Choice(title="Back", value="back"),
+                ],
+                instruction="(arrow keys select, Enter confirm, Ctrl-C back)",
+            ).ask()
+        except KeyboardInterrupt:
+            mode = "back"
+
+        if not mode or mode == "back":
+            return
+
+        if mode == "all":
+            to_delete = entries
+            message = f"Delete all {len(to_delete)} history entries?"
+        elif mode == "before_today":
+            today = date.today()
+            to_delete = [e for e in entries if (self._history_entry_date(e) or today) < today]
+            message = f"Delete {len(to_delete)} history entries before today?"
+        else:
+            try:
+                raw = questionary.text(
+                    f"Delete entries after index (0-{len(entries)}):",
+                    default=str(len(entries)),
+                    validate=lambda x: x.isdigit() and 0 <= int(x) <= len(entries),
+                ).ask()
+            except KeyboardInterrupt:
+                raw = None
+
+            if raw is None:
+                return
+            keep_until = int(raw)
+            to_delete = entries[keep_until:]
+            message = f"Delete {len(to_delete)} history entries after index {keep_until}?"
+
+        if not to_delete:
+            print_info("No matching history entries to delete.")
+            return
+
+        confirm = questionary.confirm(message, default=False).ask()
+        if not confirm:
+            print_info("Cancelled.")
+            return
+
+        deleted = self._delete_history_entries(to_delete)
+        print_success(f"Deleted {deleted} history entries.")
+
+    def _history_browse(self, keyword: str = "") -> None:
+        import questionary
+
+        entries = self._load_history_entries(keyword)
+        if not entries:
+            if keyword:
+                print_info(f"No history entries matched: {keyword}")
+            else:
+                print_info("No download history yet.")
+            return
+
+        while True:
+            choices = [
+                questionary.Choice(title=self._history_choice_label(i, e), value=i)
+                for i, e in enumerate(entries)
+            ]
+            choices.append(questionary.Choice(title="Back", value=-1))
+
+            title = f"Download History ({len(entries)} entries)"
+            if keyword:
+                title += f" - search: {keyword}"
+
+            try:
+                idx = questionary.select(
+                    title,
+                    choices=choices,
+                    instruction="(arrow keys select, Enter actions, Ctrl-C back)",
+                ).ask()
+            except KeyboardInterrupt:
+                idx = -1
+
+            if idx is None or idx == -1:
+                return
+
+            entry = entries[idx]
+            result = self._history_actions(entry)
+            if result == "deleted":
+                entries.pop(idx)
+                if not entries:
+                    print_info("No history entries remain.")
+                    return
+
+    def _history_actions(self, entry: dict) -> str | None:
+        import questionary
+        import webbrowser
+
+        title = entry.get("title_jpn") or entry.get("title", "?")
+        url = entry.get("url", "")
+        method = entry.get("method", "direct")
+        date = entry.get("downloaded_at", "")[:19].replace("T", " ")
+
+        console.print(f"\n  [bold]{title}[/bold]")
+        console.print(f"  [dim]{url}[/dim]")
+        console.print(f"  [dim]Method: {method}  |  Date: {date}[/dim]\n")
+
+        action_choices = [
+            questionary.Choice(title="Open in browser", value="browser"),
+            questionary.Choice(title="Re-download (manual select)", value="redownload"),
+        ]
+
+        output_dir = entry.get("output_dir", "")
+        if output_dir:
+            action_choices.append(questionary.Choice(title="Open folder", value="folder"))
+
+        action_choices.extend([
+            questionary.Choice(title="Remove from history", value="remove"),
+            questionary.Choice(title="Back", value="back"),
+        ])
+
+        try:
+            action = questionary.select(
+                "Action:",
+                choices=action_choices,
+                instruction="",
+            ).ask()
+        except KeyboardInterrupt:
+            action = "back"
+
+        if not action or action == "back":
+            return None
+
+        if action == "browser":
+            if url:
+                webbrowser.open(url)
+                print_success("Opened in browser.")
+            else:
+                print_error("No URL available.")
+        elif action == "redownload":
+            if url:
+                self._redownload(url)
+            else:
+                print_error("No URL available.")
+        elif action == "folder":
+            try:
+                os.startfile(output_dir)
+            except Exception:
+                print_error(f"Could not open: {output_dir}")
+        elif action == "remove":
+            confirm = questionary.confirm("Remove this entry from history?", default=False).ask()
+            if confirm and self._delete_history_entries([entry]):
+                print_success("Removed from history.")
+                return "deleted"
+            print_info("Cancelled.")
+
+        return None
+
+    def _history_bulk_select(
+        self,
+        title: str,
+        entries: list[dict],
+        selected: set[int],
+        cursor_choice: tuple[str, int | None],
+    ) -> tuple[str, int | None] | None:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from questionary import utils
+        from questionary.constants import DEFAULT_QUESTION_PREFIX, DEFAULT_SELECTED_POINTER
+        from questionary.prompts import common
+        from questionary.prompts.common import Choice, InquirerControl
+        from questionary.question import Question
+        from questionary.styles import merge_styles_default
+
+        entry_choices = [
+            Choice(
+                title=self._history_choice_label(i, entry, i in selected),
+                value=("toggle", i),
+            )
+            for i, entry in enumerate(entries)
+        ]
+        select_all_choice = Choice(title="Select All", value=("select_all", None))
+        unselect_all_choice = Choice(title="Unselect All", value=("unselect_all", None))
+        bulk_edit_choice = Choice(title="", value=("bulk_edit", None))
+        back_choice = Choice(title="Back", value=("back", None))
+        choices = [
+            *entry_choices,
+            select_all_choice,
+            unselect_all_choice,
+            bulk_edit_choice,
+            back_choice,
+        ]
+
+        def sync_titles() -> None:
+            for i, choice in enumerate(entry_choices):
+                choice.title = self._history_choice_label(i, entries[i], i in selected)
+            if selected:
+                bulk_edit_choice.title = f"Bulk Edit ({len(selected)} selected)"
+            else:
+                bulk_edit_choice.title = "Bulk Edit (select at least one)"
+
+        sync_titles()
+
+        values = {choice.value for choice in choices}
+        if cursor_choice not in values:
+            cursor_choice = ("toggle", min(len(entries) - 1, 0))
+
+        ic = InquirerControl(
+            choices,
+            default=None,
+            pointer=DEFAULT_SELECTED_POINTER,
+            use_indicator=False,
+            use_shortcuts=False,
+            show_selected=False,
+            show_description=True,
+            use_arrow_keys=True,
+            initial_choice=cursor_choice,
+        )
+
+        def get_prompt_tokens():
+            return [
+                ("class:qmark", DEFAULT_QUESTION_PREFIX),
+                ("class:question", f" {title} "),
+                ("class:instruction", "(Enter select/unselect, Ctrl-C back)"),
+            ]
+
+        layout = common.create_inquirer_layout(ic, get_prompt_tokens)
+        bindings = KeyBindings()
+
+        @bindings.add(Keys.ControlQ, eager=True)
+        @bindings.add(Keys.ControlC, eager=True)
+        def _(event):
+            event.app.exit(result=None)
+
+        def move_cursor_down(event):
+            ic.select_next()
+            while not ic.is_selection_valid():
+                ic.select_next()
+
+        def move_cursor_up(event):
+            ic.select_previous()
+            while not ic.is_selection_valid():
+                ic.select_previous()
+
+        bindings.add(Keys.Down, eager=True)(move_cursor_down)
+        bindings.add(Keys.Up, eager=True)(move_cursor_up)
+        bindings.add("j", eager=True)(move_cursor_down)
+        bindings.add("k", eager=True)(move_cursor_up)
+        bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
+        bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+        @bindings.add(Keys.ControlM, eager=True)
+        def set_answer(event):
+            action, idx = ic.get_pointed_at().value
+            if action == "toggle" and idx is not None:
+                if idx in selected:
+                    selected.remove(idx)
+                else:
+                    selected.add(idx)
+                sync_titles()
+                event.app.invalidate()
+            elif action == "select_all":
+                selected.update(range(len(entries)))
+                sync_titles()
+                event.app.invalidate()
+            elif action == "unselect_all":
+                selected.clear()
+                sync_titles()
+                event.app.invalidate()
+            elif action == "bulk_edit":
+                if selected:
+                    event.app.exit(result=("bulk_edit", None))
+                else:
+                    event.app.invalidate()
+            elif action == "back":
+                event.app.exit(result=("back", None))
+
+        @bindings.add(Keys.Any)
+        def other(event):
+            pass
+
+        question = Question(
+            Application(
+                layout=layout,
+                key_bindings=bindings,
+                style=merge_styles_default([None]),
+                **utils.used_kwargs({}, Application.__init__),
+            )
+        )
+        return question.ask()
+
+    def _history_bulk(self, keyword: str = "") -> None:
+        entries = self._load_history_entries(keyword)
+        if not entries:
+            if keyword:
+                print_info(f"No history entries matched: {keyword}")
+            else:
+                print_info("No download history yet.")
+            return
+
+        selected: set[int] = set()
+        cursor_choice = ("toggle", 0)
+
+        while True:
+            if cursor_choice[0] == "toggle" and cursor_choice[1] is not None:
+                cursor_idx = min(cursor_choice[1], len(entries) - 1)
+                cursor_choice = ("toggle", cursor_idx)
+
+            title = f"History Bulk Mode ({len(entries)} entries)"
+            if keyword:
+                title += f" - search: {keyword}"
+
+            bulk_choice = self._history_bulk_select(title, entries, selected, cursor_choice)
+
+            if bulk_choice is None:
+                bulk_choice = ("back", None)
+            action, idx = bulk_choice
+            cursor_choice = bulk_choice
+
+            if action == "back":
+                return
+            if action == "bulk_edit":
+                chosen = [entries[i] for i in sorted(selected)]
+                result = self._history_bulk_actions(chosen)
+                if result == "deleted":
+                    deleted_files = {e.get("_file") for e in chosen}
+                    entries = [e for e in entries if e.get("_file") not in deleted_files]
+                    selected.clear()
+                    if not entries:
+                        print_info("No history entries remain.")
+                        return
+                    cursor_choice = ("toggle", min(idx or 0, len(entries) - 1))
+
+    def _history_bulk_actions(self, entries: list[dict]) -> str | None:
+        import questionary
+        import webbrowser
+
+        try:
+            action = questionary.select(
+                f"Bulk Edit ({len(entries)} selected):",
+                choices=[
+                    questionary.Choice(title="Open in browser", value="browser"),
+                    questionary.Choice(title="Re-download", value="redownload"),
+                    questionary.Choice(title="Open folders", value="folders"),
+                    questionary.Choice(title="Remove from history", value="remove"),
+                    questionary.Choice(title="Back", value="back"),
+                ],
+                instruction="",
+            ).ask()
+        except KeyboardInterrupt:
+            action = "back"
+
+        if not action or action == "back":
+            return None
+
+        if action == "browser":
+            opened = 0
+            for entry in entries:
+                url = entry.get("url", "")
+                if url:
+                    webbrowser.open(url)
+                    opened += 1
+            print_success(f"Opened {opened} entries in browser.")
+        elif action == "redownload":
+            self._history_redownload_bulk(entries)
+        elif action == "folders":
+            opened = 0
+            seen: set[str] = set()
+            for entry in entries:
+                output_dir = entry.get("output_dir", "")
+                if not output_dir or output_dir in seen:
+                    continue
+                seen.add(output_dir)
+                try:
+                    os.startfile(output_dir)
+                    opened += 1
+                except Exception:
+                    print_error(f"Could not open: {output_dir}")
+            print_success(f"Opened {opened} folder(s).")
+        elif action == "remove":
+            confirm = questionary.confirm(
+                f"Remove {len(entries)} entries from history?",
+                default=False,
+            ).ask()
+            if confirm:
+                deleted = self._delete_history_entries(entries)
+                print_success(f"Removed {deleted} history entries.")
+                return "deleted"
+            print_info("Cancelled.")
+
+        return None
+
+    def _history_redownload_bulk(self, entries: list[dict]) -> None:
+        import questionary
+
+        try:
+            mode = questionary.select(
+                "Re-download mode:",
+                choices=[
+                    questionary.Choice(title="Direct download (all)", value="direct"),
+                    questionary.Choice(title="Auto (smart select best method)", value="auto"),
+                    questionary.Choice(title="Manual select for each", value="manual"),
+                    questionary.Choice(title="Back", value="back"),
+                ],
+                instruction="",
+            ).ask()
+        except KeyboardInterrupt:
+            mode = "back"
+
+        if not mode or mode == "back":
+            return
+
+        started = 0
+        failed = 0
+        for i, entry in enumerate(entries, 1):
+            url = entry.get("url", "")
+            title = entry.get("title_jpn") or entry.get("title") or url or "?"
+            console.print(f"  [bold]({i}/{len(entries)}) {title[:70]}[/bold]")
+            if not url:
+                failed += 1
+                print_error("No URL available.")
+                continue
+
+            if mode == "manual":
+                self._redownload(url)
+                started += 1
+                continue
+
+            console.print("  [cyan]Fetching gallery info...[/cyan]")
+            try:
+                gallery, torrents = self.manager.fetch_info_and_torrents_sync(url)
+            except Exception as e:
+                failed += 1
+                print_error(f"Failed: {e}")
+                continue
+
+            if mode == "direct":
+                self._start_direct(url, gallery)
+            else:
+                self._auto_download(url, gallery, torrents)
+            started += 1
+
+        print_success(f"Bulk re-download queued {started} entr{'y' if started == 1 else 'ies'}.")
+        if failed:
+            print_error(f"{failed} entries failed to queue.")
+
+    def _delete_history_entries(self, entries: list[dict]) -> int:
+        deleted = 0
+        for entry in entries:
+            file_path = entry.get("_file")
+            if not file_path:
+                continue
+            try:
+                file_path.unlink(missing_ok=True)
+                deleted += 1
+            except Exception as e:
+                print_error(f"Could not delete {file_path}: {e}")
+        return deleted
+
     # ------------------------------------------------------------------
     # Cancel command (interactive if no args)
     # ------------------------------------------------------------------
 
+    def _cancel_choice_label(self, task: DownloadTask, selected: bool) -> str:
+        mark = "[x] " if selected else "[ ] "
+        return f"{mark}#{task.id}  {task.short_title}  [{task.status.value}]  {task.downloaded}/{task.total}"
+
+    def _cancel_bulk_select(
+        self,
+        tasks: list[DownloadTask],
+        selected: set[int],
+    ) -> str | None:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from questionary import utils
+        from questionary.constants import DEFAULT_QUESTION_PREFIX, DEFAULT_SELECTED_POINTER
+        from questionary.prompts import common
+        from questionary.prompts.common import Choice, InquirerControl
+        from questionary.question import Question
+        from questionary.styles import merge_styles_default
+
+        task_choices = [
+            Choice(
+                title=self._cancel_choice_label(task, task.id in selected),
+                value=("toggle", task.id),
+            )
+            for task in tasks
+        ]
+        select_all_choice = Choice(title="Select All", value=("select_all", None))
+        unselect_all_choice = Choice(title="Unselect All", value=("unselect_all", None))
+        bulk_cancel_choice = Choice(title="", value=("bulk_cancel", None))
+        back_choice = Choice(title="Back", value=("back", None))
+        choices = [
+            *task_choices,
+            select_all_choice,
+            unselect_all_choice,
+            bulk_cancel_choice,
+            back_choice,
+        ]
+
+        def sync_titles() -> None:
+            for i, task in enumerate(tasks):
+                task_choices[i].title = self._cancel_choice_label(task, task.id in selected)
+            if selected:
+                bulk_cancel_choice.title = f"Bulk Cancel ({len(selected)} selected)"
+            else:
+                bulk_cancel_choice.title = "Bulk Cancel (select at least one)"
+
+        sync_titles()
+
+        ic = InquirerControl(
+            choices,
+            default=None,
+            pointer=DEFAULT_SELECTED_POINTER,
+            use_indicator=False,
+            use_shortcuts=False,
+            show_selected=False,
+            show_description=True,
+            use_arrow_keys=True,
+            initial_choice=("toggle", tasks[0].id),
+        )
+
+        def get_prompt_tokens():
+            return [
+                ("class:qmark", DEFAULT_QUESTION_PREFIX),
+                ("class:question", f" Cancel Tasks ({len(tasks)} active) "),
+                ("class:instruction", "(Enter select/unselect, Ctrl-C back)"),
+            ]
+
+        layout = common.create_inquirer_layout(ic, get_prompt_tokens)
+        bindings = KeyBindings()
+
+        @bindings.add(Keys.ControlQ, eager=True)
+        @bindings.add(Keys.ControlC, eager=True)
+        def _(event):
+            event.app.exit(result=None)
+
+        def move_cursor_down(event):
+            ic.select_next()
+            while not ic.is_selection_valid():
+                ic.select_next()
+
+        def move_cursor_up(event):
+            ic.select_previous()
+            while not ic.is_selection_valid():
+                ic.select_previous()
+
+        bindings.add(Keys.Down, eager=True)(move_cursor_down)
+        bindings.add(Keys.Up, eager=True)(move_cursor_up)
+        bindings.add("j", eager=True)(move_cursor_down)
+        bindings.add("k", eager=True)(move_cursor_up)
+        bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
+        bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+        @bindings.add(Keys.ControlM, eager=True)
+        def set_answer(event):
+            action, task_id = ic.get_pointed_at().value
+            if action == "toggle" and task_id is not None:
+                if task_id in selected:
+                    selected.remove(task_id)
+                else:
+                    selected.add(task_id)
+                sync_titles()
+                event.app.invalidate()
+            elif action == "select_all":
+                selected.update(task.id for task in tasks)
+                sync_titles()
+                event.app.invalidate()
+            elif action == "unselect_all":
+                selected.clear()
+                sync_titles()
+                event.app.invalidate()
+            elif action == "bulk_cancel":
+                if selected:
+                    event.app.exit(result="bulk_cancel")
+                else:
+                    event.app.invalidate()
+            elif action == "back":
+                event.app.exit(result="back")
+
+        @bindings.add(Keys.Any)
+        def other(event):
+            pass
+
+        question = Question(
+            Application(
+                layout=layout,
+                key_bindings=bindings,
+                style=merge_styles_default([None]),
+                **utils.used_kwargs({}, Application.__init__),
+            )
+        )
+        return question.ask()
+
     def _cmd_cancel(self, args: list[str]) -> None:
         if args:
-            # Cancel by ID directly
-            try:
-                task_id = int(args[0])
-            except ValueError:
-                print_error("Task ID must be a number.")
+            first = args[0].lower()
+            if first == "all":
+                active = self.manager.get_active_tasks()
+                cancelled = sum(1 for task in active if self.manager.cancel_task(task.id))
+                if cancelled:
+                    print_success(f"Cancelled {cancelled} active task(s).")
+                else:
+                    print_info("No active tasks to cancel.")
                 return
-            if self.manager.cancel_task(task_id):
-                print_success(f"Task #{task_id} cancelled.")
-            else:
-                print_error(f"Cannot cancel task #{task_id}.")
-            return
 
-        # Interactive: show list of active tasks
-        import questionary
+            try:
+                start_id = int(args[0])
+                end_id = int(args[1]) if len(args) >= 2 else start_id
+            except ValueError:
+                print_error("Usage: cancel | cancel <id> | cancel all | cancel <start id> <end id>")
+                return
+
+            if start_id > end_id:
+                start_id, end_id = end_id, start_id
+
+            cancelled = 0
+            for task_id in range(start_id, end_id + 1):
+                if self.manager.cancel_task(task_id):
+                    cancelled += 1
+
+            if cancelled:
+                if start_id == end_id:
+                    print_success(f"Task #{start_id} cancelled.")
+                else:
+                    print_success(f"Cancelled {cancelled} task(s) in range #{start_id}-#{end_id}.")
+            else:
+                print_error(f"No cancellable task(s) found in range #{start_id}-#{end_id}.")
+            return
 
         active = self.manager.get_active_tasks()
         if not active:
             print_info("No active tasks to cancel.")
             return
 
-        choices = []
-        for t in active:
-            label = f"#{t.id}  {t.short_title}  [{t.status.value}]  {t.downloaded}/{t.total}"
-            choices.append(questionary.Choice(title=label, value=t.id))
-        choices.append(questionary.Choice(title="\u2190 Back", value=-1))
-
-        try:
-            selected = questionary.select(
-                "Select task to cancel:",
-                choices=choices,
-                instruction="(\u2191\u2193 select, Enter cancel, Ctrl-C back)",
-            ).ask()
-        except KeyboardInterrupt:
-            selected = -1
-
-        if selected is None or selected == -1:
+        selected_task_ids: set[int] = set()
+        action = self._cancel_bulk_select(active, selected_task_ids)
+        if not action or action == "back":
             return
 
-        if self.manager.cancel_task(selected):
-            print_success(f"Task #{selected} cancelled.")
-        else:
-            print_error(f"Cannot cancel task #{selected}.")
+        if action == "bulk_cancel":
+            cancelled = sum(1 for task_id in sorted(selected_task_ids) if self.manager.cancel_task(task_id))
+            if cancelled:
+                print_success(f"Cancelled {cancelled} selected task(s).")
+            else:
+                print_error("No selected task could be cancelled.")
+            return
+
 
     # ------------------------------------------------------------------
     # Folder command
@@ -1159,73 +1991,147 @@ class Shell:
         """Interactive config editor with arrow key selection."""
         import questionary
 
-        editable = [
-            ("download_dir", "Download Directory", self.config.download_dir),
-            ("max_parallel", "Max Parallel Downloads", str(self.config.max_parallel)),
-            ("rate_limit_delay", "Rate Limit Delay (seconds)", str(self.config.rate_limit_delay)),
-            ("retry_count", "Retry Count", str(self.config.retry_count)),
-            ("prefer_torrent", "Prefer Torrent", str(self.config.prefer_torrent)),
-            ("auto_select_best", "Auto Select Best Method", str(self.config.auto_select_best)),
-            ("debug_mode", "Debug Mode", str(self.config.debug_mode)),
-            ("ipb_member_id", "ExH Cookie: ipb_member_id", self.config.ipb_member_id or "(not set)"),
-            ("ipb_pass_hash", "ExH Cookie: ipb_pass_hash", ("***" + self.config.ipb_pass_hash[-4:]) if self.config.ipb_pass_hash else "(not set)"),
-            ("igneous", "ExH Cookie: igneous", ("***" + self.config.igneous[-4:]) if self.config.igneous else "(not set)"),
+        _BACK = "__BACK__"
+        bool_keys = {"prefer_torrent", "show_japanese_title", "debug_mode"}
+        mode_labels = {
+            "auto": "Auto",
+            "ask": "Ask",
+            "direct": "Direct Download",
+        }
+        sections = [
+            (
+                "General",
+                [
+                    ("show_japanese_title", "Show Japanese Title"),
+                    ("debug_mode", "Debug Mode"),
+                ],
+            ),
+            (
+                "Download",
+                [
+                    ("download_dir", "Download Directory"),
+                    ("default_download_mode", "Default Download Mode"),
+                    ("prefer_torrent", "Prefer Torrent"),
+                    ("max_parallel", "Max Parallel Downloads"),
+                    ("rate_limit_delay", "Rate Limit Delay (seconds)"),
+                    ("retry_count", "Retry Count"),
+                    ("retry_delay", "Retry Delay (seconds)"),
+                ],
+            ),
+            (
+                "Cookie",
+                [
+                    ("ipb_member_id", "ipb_member_id"),
+                    ("ipb_pass_hash", "ipb_pass_hash"),
+                    ("igneous", "igneous"),
+                    ("sk", "sk"),
+                ],
+            ),
         ]
 
-        _BACK = "__BACK__"
+        def display_value(key: str) -> str:
+            value = getattr(self.config, key, "")
+            if key == "default_download_mode":
+                return mode_labels.get(value, "Auto")
+            if key in ("ipb_pass_hash", "igneous", "sk") and value:
+                return "***" + str(value)[-4:]
+            if value == "":
+                return "(not set)"
+            return str(value)
 
         while True:
-            choices = []
-            for key, label, val in editable:
-                choices.append(questionary.Choice(
-                    title=f"{label}: {val}",
-                    value=key,
-                ))
-            choices.append(questionary.Choice(title="\u2190 Back", value=_BACK))
+            section_choices = [
+                questionary.Choice(title=name, value=name)
+                for name, _items in sections
+            ]
+            section_choices.append(questionary.Choice(title="\u2190 Back", value=_BACK))
 
             try:
-                selected_key = questionary.select(
-                    "Config Editor (select to edit):",
-                    choices=choices,
-                    instruction="(\u2191\u2193 select, Enter edit, Ctrl-C back)",
+                selected_section = questionary.select(
+                    "Config Editor:",
+                    choices=section_choices,
+                    instruction="(\u2191\u2193 select, Enter open, Ctrl-C back)",
                 ).ask()
             except KeyboardInterrupt:
-                selected_key = None
+                selected_section = None
 
-            if not selected_key or selected_key == _BACK:
+            if not selected_section or selected_section == _BACK:
                 return
 
-            # Find current value
-            current = getattr(self.config, selected_key, "")
-            if selected_key in ("ipb_pass_hash", "igneous") and current:
-                current = ""  # don't prefill secrets
+            section_items = next(items for name, items in sections if name == selected_section)
 
-            new_value = questionary.text(
-                f"New value for {selected_key}:",
-                default=str(current) if current else "",
-            ).ask()
+            while True:
+                item_choices = [
+                    questionary.Choice(
+                        title=f"{label}: {display_value(key)}",
+                        value=key,
+                    )
+                    for key, label in section_items
+                ]
+                item_choices.append(questionary.Choice(title="\u2190 Back", value=_BACK))
 
-            if new_value is None:
-                continue
+                try:
+                    selected_key = questionary.select(
+                        f"{selected_section} Settings:",
+                        choices=item_choices,
+                        instruction="(\u2191\u2193 select, Enter edit, Ctrl-C back)",
+                    ).ask()
+                except KeyboardInterrupt:
+                    selected_key = None
 
-            self._set_config(selected_key, new_value)
+                if not selected_key or selected_key == _BACK:
+                    break
 
-            # Refresh the displayed values
-            editable = [
-                ("download_dir", "Download Directory", self.config.download_dir),
-                ("max_parallel", "Max Parallel Downloads", str(self.config.max_parallel)),
-                ("rate_limit_delay", "Rate Limit Delay (seconds)", str(self.config.rate_limit_delay)),
-                ("retry_count", "Retry Count", str(self.config.retry_count)),
-                ("prefer_torrent", "Prefer Torrent", str(self.config.prefer_torrent)),
-                ("auto_select_best", "Auto Select Best Method", str(self.config.auto_select_best)),
-                ("debug_mode", "Debug Mode", str(self.config.debug_mode)),
-                ("ipb_member_id", "ExH Cookie: ipb_member_id", self.config.ipb_member_id or "(not set)"),
-                ("ipb_pass_hash", "ExH Cookie: ipb_pass_hash", ("***" + self.config.ipb_pass_hash[-4:]) if self.config.ipb_pass_hash else "(not set)"),
-                ("igneous", "ExH Cookie: igneous", ("***" + self.config.igneous[-4:]) if self.config.igneous else "(not set)"),
-            ]
+                current = getattr(self.config, selected_key, "")
+
+                if selected_key == "default_download_mode":
+                    try:
+                        new_value = questionary.select(
+                            "Default Download Mode:",
+                            choices=[
+                                questionary.Choice(title="Auto", value="auto"),
+                                questionary.Choice(title="Ask", value="ask"),
+                                questionary.Choice(title="Direct Download", value="direct"),
+                            ],
+                            default=current,
+                            instruction="(\u2191\u2193 select, Enter confirm, Ctrl-C back)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        new_value = None
+                elif selected_key in bool_keys:
+                    try:
+                        new_value = questionary.select(
+                            f"New value for {selected_key}:",
+                            choices=[
+                                questionary.Choice(title="Enabled", value="true"),
+                                questionary.Choice(title="Disabled", value="false"),
+                            ],
+                            default="true" if bool(current) else "false",
+                            instruction="(\u2191\u2193 select, Enter confirm, Ctrl-C back)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        new_value = None
+                else:
+                    if selected_key in ("ipb_pass_hash", "igneous", "sk") and current:
+                        current = ""
+                    new_value = questionary.text(
+                        f"New value for {selected_key}:",
+                        default=str(current) if current else "",
+                    ).ask()
+
+                if new_value is None:
+                    continue
+
+                self._set_config(selected_key, new_value)
 
     def _show_config(self) -> None:
         from rich.table import Table
+
+        mode_labels = {
+            "auto": "Auto",
+            "ask": "Ask",
+            "direct": "Direct Download",
+        }
 
         table = Table(
             title="Configuration",
@@ -1233,25 +2139,36 @@ class Shell:
             header_style="bold cyan",
             border_style="dim",
         )
+        table.add_column("Section", style="bold cyan")
         table.add_column("Key", style="bold")
         table.add_column("Value")
 
         c = self.config
-        table.add_row("download_dir", c.download_dir)
-        table.add_row("max_parallel", str(c.max_parallel))
-        table.add_row("rate_limit_delay", f"{c.rate_limit_delay}s")
-        table.add_row("retry_count", str(c.retry_count))
-        table.add_row("prefer_torrent", str(c.prefer_torrent))
-        table.add_row("auto_select_best", str(c.auto_select_best))
-        table.add_row("debug_mode", str(c.debug_mode))
-        table.add_row("ipb_member_id", c.ipb_member_id or "[dim]not set[/dim]")
-        table.add_row("ipb_pass_hash", ("***" + c.ipb_pass_hash[-4:]) if c.ipb_pass_hash else "[dim]not set[/dim]")
-        table.add_row("igneous", ("***" + c.igneous[-4:]) if c.igneous else "[dim]not set[/dim]")
-        table.add_row("exhentai_ready", "[green]yes[/green]" if c.has_exhentai_cookies else "[red]no[/red]")
+        rows = [
+            ("General", "show_japanese_title", str(c.show_japanese_title)),
+            ("General", "debug_mode", str(c.debug_mode)),
+            ("Download", "download_dir", c.download_dir),
+            ("Download", "default_download_mode", mode_labels.get(c.default_download_mode, "Auto")),
+            ("Download", "prefer_torrent", str(c.prefer_torrent)),
+            ("Download", "max_parallel", str(c.max_parallel)),
+            ("Download", "rate_limit_delay", f"{c.rate_limit_delay}s"),
+            ("Download", "retry_count", str(c.retry_count)),
+            ("Download", "retry_delay", f"{c.retry_delay}s"),
+            ("Cookie", "ipb_member_id", c.ipb_member_id or "[dim]not set[/dim]"),
+            ("Cookie", "ipb_pass_hash", ("***" + c.ipb_pass_hash[-4:]) if c.ipb_pass_hash else "[dim]not set[/dim]"),
+            ("Cookie", "igneous", ("***" + c.igneous[-4:]) if c.igneous else "[dim]not set[/dim]"),
+            ("Cookie", "sk", ("***" + c.sk[-4:]) if c.sk else "[dim]not set[/dim]"),
+            ("Cookie", "exhentai_ready", "[green]yes[/green]" if c.has_exhentai_cookies else "[red]no[/red]"),
+        ]
+
+        for section, key, value in rows:
+            table.add_row(section, key, value)
 
         console.print(table)
 
     def _set_config(self, key: str, value: str) -> None:
+        from .config import _normalize_download_mode
+
         key = key.lower().replace("-", "_")
 
         config_map: dict[str, str] = {
@@ -1261,7 +2178,11 @@ class Shell:
             "retry_count": "retry_count",
             "retry_delay": "retry_delay",
             "prefer_torrent": "prefer_torrent",
+            "default_download_mode": "default_download_mode",
+            "download_mode": "default_download_mode",
+            "mode": "default_download_mode",
             "auto_select_best": "auto_select_best",
+            "show_japanese_title": "show_japanese_title",
             "debug_mode": "debug_mode",
             "ipb_member_id": "ipb_member_id",
             "ipb_pass_hash": "ipb_pass_hash",
@@ -1290,13 +2211,20 @@ class Shell:
             except ValueError:
                 print_error(f"{key} must be a number.")
                 return
-        elif attr in ("prefer_torrent", "auto_select_best", "debug_mode"):
-            setattr(self.config, attr, value.lower() in ("true", "1", "yes"))
+        elif attr == "default_download_mode":
+            self.config.default_download_mode = _normalize_download_mode(value)
+        elif attr == "auto_select_best":
+            self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
+        elif attr in ("prefer_torrent", "show_japanese_title", "debug_mode"):
+            setattr(self.config, attr, value.lower() in ("true", "1", "yes", "on", "enabled"))
         else:
             setattr(self.config, attr, value)
 
         self.config.save()
-        print_success(f"{key} = {getattr(self.config, attr)}")
+        if attr == "auto_select_best":
+            print_success(f"default_download_mode = {self.config.default_download_mode}")
+        else:
+            print_success(f"{attr} = {getattr(self.config, attr)}")
 
     # ------------------------------------------------------------------
     # Callbacks & lifecycle

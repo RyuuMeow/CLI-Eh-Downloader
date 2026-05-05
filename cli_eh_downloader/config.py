@@ -26,7 +26,7 @@ class Config:
     retry_count: int = 3
     retry_delay: float = 5.0
     prefer_torrent: bool = True
-    auto_select_best: bool = True  # Skip interactive prompt, auto-pick best method
+    default_download_mode: str = "auto"  # auto, ask, direct
 
     # Cookie settings (for ExHentai)
     ipb_member_id: str = ""
@@ -37,6 +37,15 @@ class Config:
     # Display settings
     show_japanese_title: bool = True
     debug_mode: bool = False
+
+    @property
+    def auto_select_best(self) -> bool:
+        """Legacy compatibility for older config callers."""
+        return self.default_download_mode == "auto"
+
+    @auto_select_best.setter
+    def auto_select_best(self, value: bool) -> None:
+        self.default_download_mode = "auto" if value else "ask"
 
     @property
     def has_exhentai_cookies(self) -> bool:
@@ -68,7 +77,7 @@ class Config:
             f"retry_count = {self.retry_count}\n",
             f"retry_delay = {self.retry_delay}\n",
             f"prefer_torrent = {'true' if self.prefer_torrent else 'false'}\n",
-            f"auto_select_best = {'true' if self.auto_select_best else 'false'}\n",
+            f'default_download_mode = "{self.default_download_mode}"\n',
             "\n[cookies]\n",
             f'ipb_member_id = "{self.ipb_member_id}"\n',
             f'ipb_pass_hash = "{self.ipb_pass_hash}"\n',
@@ -117,8 +126,10 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.retry_delay = float(dl["retry_delay"])
     if "prefer_torrent" in dl:
         config.prefer_torrent = bool(dl["prefer_torrent"])
-    if "auto_select_best" in dl:
-        config.auto_select_best = bool(dl["auto_select_best"])
+    if "default_download_mode" in dl:
+        config.default_download_mode = _normalize_download_mode(str(dl["default_download_mode"]))
+    elif "auto_select_best" in dl:
+        config.default_download_mode = "auto" if bool(dl["auto_select_best"]) else "ask"
 
     cookies = data.get("cookies", {})
     if "ipb_member_id" in cookies:
@@ -135,3 +146,15 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.show_japanese_title = bool(display["show_japanese_title"])
     if "debug_mode" in display:
         config.debug_mode = bool(display["debug_mode"])
+
+
+def _normalize_download_mode(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "auto": "auto",
+        "ask": "ask",
+        "manual": "ask",
+        "direct": "direct",
+        "direct_download": "direct",
+    }
+    return aliases.get(normalized, "auto")

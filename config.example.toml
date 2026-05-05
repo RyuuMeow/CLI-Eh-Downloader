@@ -14,6 +14,8 @@ retry_count = 3
 retry_delay = 5.0
 # Prefer torrent download when available
 prefer_torrent = true
+# Default download mode: auto, ask, direct
+default_download_mode = "auto"
 
 [cookies]
 # Required for ExHentai access. Get these from your browser cookies.
@@ -26,3 +28,5 @@ sk = ""
 [display]
 # Show Japanese title when available
 show_japanese_title = true
+# Enable debug logging
+debug_mode = false

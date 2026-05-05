@@ -159,7 +159,13 @@ def live_status_display(
     console.print("  [dim]Live status — press [bold]Ctrl+C[/bold] to return[/dim]\n")
 
     try:
-        with Live(_make_display(), console=console, refresh_per_second=4, transient=False) as live:
+        with Live(
+            _make_display(),
+            console=console,
+            refresh_per_second=4,
+            transient=False,
+            vertical_overflow="visible",
+        ) as live:
             while True:
                 time.sleep(refresh_rate)
                 live.update(_make_display())
@@ -175,34 +181,73 @@ def live_status_display(
 
 
 def print_help() -> None:
-    help_table = Table(show_header=True, header_style="bold cyan", border_style="dim", title="Commands")
-    help_table.add_column("Command", style="bold green", width=28)
-    help_table.add_column("Description")
-
-    commands = [
-        ("add <url>",             "Add a gallery download task"),
-        ("<url>",                 "Shortcut — paste a URL directly to add"),
-        ("<listing url>",         "Paste a tag/uploader/category URL for bulk download"),
-        ("search <keyword>",     "Search galleries and browse results"),
-        ("history",               "Browse download history (open, re-download)"),
-        ("history -clear",        "Clear all download history"),
-        ("status / s",            "Show all task statuses (live refresh if active)"),
-        ("status -clear",         "Remove finished tasks from status"),
-        ("cancel",                "Interactive cancel (or cancel <id>)"),
-        ("folder / f",            "Open download directory in file explorer"),
-        ("config",                "Interactive config editor"),
-        ("config show",           "Show current configuration"),
-        ("config set <key> <val>","Update a config value"),
-        ("github / repo",         "Open GitHub repository in browser"),
-        ("clear",                 "Clear screen"),
-        ("help / h",              "Show this help"),
-        ("quit / q",              "Exit (waits for active downloads)"),
+    groups = [
+        (
+            "Download",
+            [
+                ("add <url>", "Add a gallery download task"),
+                ("<url>", "Paste a gallery URL directly to add"),
+                ("<listing url>", "Paste a tag/uploader/category URL for bulk download"),
+                ("search <keyword>", "Search galleries; bulk mode is toggled in results"),
+            ],
+        ),
+        (
+            "Tasks",
+            [
+                ("status / s", "Show all task statuses (live refresh if active)"),
+                ("status -clear", "Remove finished tasks from status"),
+                ("cancel", "Open the bulk cancel menu"),
+                ("cancel <id>", "Cancel one task by task id"),
+                ("cancel all", "Cancel all active tasks"),
+                ("cancel <start> <end>", "Cancel active tasks in an inclusive id range"),
+            ],
+        ),
+        (
+            "History",
+            [
+                ("history", "Browse download history"),
+                ("history -search <keyword>", "Search download history"),
+                ("history -clear", "Open history cleanup menu"),
+                ("history -bulk", "Open history in bulk-select mode"),
+                ("history -bulk -search <keyword>", "Search history, then bulk-select results"),
+            ],
+        ),
+        (
+            "Config & Files",
+            [
+                ("folder / f", "Open download directory in file explorer"),
+                ("config", "Interactive config editor"),
+                ("config show", "Show current configuration"),
+                ("config set <key> <val>", "Update a config value"),
+            ],
+        ),
+        (
+            "General",
+            [
+                ("github / repo", "Open GitHub repository in browser"),
+                ("clear", "Clear screen"),
+                ("help / h", "Show this help"),
+                ("quit / q", "Exit (waits for active downloads)"),
+            ],
+        ),
     ]
-    for cmd, desc in commands:
-        help_table.add_row(cmd, desc)
 
-    console.print(help_table)
-    console.print("  [dim]Tip: Use ↑↓ arrow keys in menus, Ctrl-C to go back[/dim]")
+    for title, commands in groups:
+        help_table = Table(
+            show_header=True,
+            header_style="bold cyan",
+            border_style="dim",
+            title=title,
+        )
+        help_table.add_column("Command", style="bold green", width=32)
+        help_table.add_column("Description")
+
+        for cmd, desc in commands:
+            help_table.add_row(cmd, desc)
+
+        console.print(help_table)
+
+    console.print("  [dim]Tip: Use arrow keys in menus, Enter to confirm, Ctrl-C to go back[/dim]")
 
 
 def print_error(msg: str) -> None:
