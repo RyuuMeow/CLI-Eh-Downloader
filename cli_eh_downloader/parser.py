@@ -328,3 +328,126 @@ async def search_galleries(
     return SearchPage(results=results, current_page=page, total_results=total_results,
                       next_url=next_url, prev_url=prev_url)
 
+
+async def fetch_listing_page(
+    client: EHClient,
+    base_url: str,
+    page: int = 0,
+) -> SearchPage:
+    """Fetch a listing page (tag, uploader, category, etc.) by URL.
+
+    Appends ?page=N (or &page=N) for pagination. The parsing logic is the
+    same as search_galleries — both use the standard gallery list table.
+    """
+    import urllib.parse
+
+    # Build the paginated URL
+    parsed = urllib.parse.urlparse(base_url)
+    params = urllib.parse.parse_qs(parsed.query)
+    params["page"] = [str(page)]
+    new_query = urllib.parse.urlencode(params, doseq=True)
+    url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+
+    response = await client.get(url)
+    soup = BeautifulSoup(response.text, "lxml")
+    results: list[SearchResult] = []
+
+    # --- Parse total results ---
+    total_results = 0
+    searchtext = soup.select_one("div.searchtext")
+    if searchtext:
+        st_text = searchtext.get_text(strip=True)
+        count_match = re.search(r"([\d,]+)\s*results", st_text)
+        if count_match:
+            total_results = int(count_match.group(1).replace(",", ""))
+
+    # If no searchtext div, try to estimate from ip div (some listing pages)
+    if not total_results:
+        ip_div = soup.select_one("div.ip")
+        if ip_div:
+            ip_text = ip_div.get_text(strip=True)
+            count_match = re.search(r"([\d,]+)\s*results", ip_text)
+            if count_match:
+                total_results = int(count_match.group(1).replace(",", ""))
+
+    # --- Parse next/prev URLs ---
+    next_url = ""
+    prev_url = ""
+    nav = soup.select_one("div.searchnav")
+    if nav:
+        next_link = nav.select_one("a#unext")
+        if next_link and next_link.get("href"):
+            next_url = next_link["href"]
+        prev_link = nav.select_one("a#uprev")
+        if prev_link and prev_link.get("href"):
+            prev_url = prev_link["href"]
+
+    # --- Determine site type from URL ---
+    site = SiteType.EX_HENTAI if "exhentai.org" in base_url else SiteType.E_HENTAI
+
+    # --- Parse gallery rows (same logic as search_galleries) ---
+    table = soup.select_one("table.itg")
+    if not table:
+        log.warning("No results table found for listing URL: %s", base_url[:80])
+        return SearchPage(results=results, current_page=page, total_results=total_results,
+                          next_url=next_url, prev_url=prev_url)
+
+    rows = table.select("tr")
+    for tr in rows[1:]:  # skip header row
+        try:
+            cat_td = tr.select_one("td.gl1c")
+            category = cat_td.get_text(strip=True) if cat_td else ""
+
+            name_td = tr.select_one("td.gl3c")
+            if not name_td:
+                continue
+            link = name_td.select_one("a")
+            if not link or not link.get("href"):
+                continue
+
+            href = link["href"]
+            parsed_url = parse_gallery_url(href)
+            if not parsed_url:
+                continue
+            gid, token, _ = parsed_url
+            glink = link.select_one(".glink")
+            title = glink.get_text(" ", strip=True) if glink else link.get_text(" ", strip=True)
+
+            info_td = tr.select_one("td.gl2c")
+            posted = ""
+            pages = ""
+            if info_td:
+                info_text = info_td.get_text(" ", strip=True)
+                pages_match = re.search(r"(\d+)\s*pages?", info_text)
+                if pages_match:
+                    pages = pages_match.group(1)
+                date_match = re.search(r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})", info_text)
+                if date_match:
+                    posted = date_match.group(1)
+
+            up_td = tr.select_one("td.gl4c")
+            uploader = ""
+            if up_td:
+                up_text = up_td.get_text(" ", strip=True)
+                up_text = re.sub(r"\d+\s*pages?", "", up_text).strip()
+                uploader = up_text
+
+            results.append(SearchResult(
+                gid=gid,
+                token=token,
+                url=href,
+                title=title,
+                category=category,
+                uploader=uploader,
+                pages=pages,
+                posted=posted,
+                site=site,
+            ))
+        except Exception:
+            continue
+
+    log.info("Listing page %d returned %d results (total: %d)",
+             page, len(results), total_results)
+    return SearchPage(results=results, current_page=page, total_results=total_results,
+                      next_url=next_url, prev_url=prev_url)
+

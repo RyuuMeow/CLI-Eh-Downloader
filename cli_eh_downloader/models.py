@@ -134,3 +134,32 @@ class SearchPage:
     @property
     def has_prev(self) -> bool:
         return bool(self.prev_url)
+
+
+class FetchMode(Enum):
+    """How to iterate listing pages for bulk download."""
+    ITER = "iter"              # All pages from start to end
+    CURRENT_PAGE = "current"   # Only the current (first) page
+    CUSTOM_RANGE = "range"     # Custom start–end page range
+
+
+class BulkDownloadMode(Enum):
+    """How to handle each gallery in bulk download."""
+    ASK_EACH = "ask"           # Prompt for each gallery
+    DIRECT = "direct"          # Always use direct download
+    AUTO = "auto"              # Auto-select best method (smart)
+
+
+@dataclass
+class BulkDownloadConfig:
+    """Configuration for a bulk (listing page) download session."""
+    url: str                                         # The listing page URL
+    page_type: str = "listing"                       # e.g. 'tag', 'uploader', 'search'
+    fetch_mode: FetchMode = FetchMode.CURRENT_PAGE
+    start_page: int = 1                              # 1-indexed, for CUSTOM_RANGE
+    end_page: int = 1                                # 1-indexed, for CUSTOM_RANGE
+    download_mode: BulkDownloadMode = BulkDownloadMode.AUTO
+    max_galleries: int = 0                           # 0 = unlimited
+    max_size_mb: float = 0.0                         # 0 = no limit (in MB)
+    keyword_filter: str = ""                         # Only download if title contains this
+    total_results: int = 0                           # Populated after first fetch

@@ -85,6 +85,18 @@ class TaskManager:
         client = self._ensure_client()
         return await search_galleries(client, query, page=page, url_override=url_override)
 
+    def fetch_listing_sync(self, url: str, page: int = 0):
+        """Synchronously fetch a listing page (tag, uploader, etc.). Returns SearchPage."""
+        future = asyncio.run_coroutine_threadsafe(
+            self._fetch_listing_async(url, page), self._loop
+        )
+        return future.result()
+
+    async def _fetch_listing_async(self, url: str, page: int = 0):
+        from .parser import fetch_listing_page
+        client = self._ensure_client()
+        return await fetch_listing_page(client, url, page=page)
+
     def add_task(
         self,
         url: str,

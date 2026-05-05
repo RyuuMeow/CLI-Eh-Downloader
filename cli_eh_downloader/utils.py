@@ -12,6 +12,63 @@ GALLERY_URL_PATTERN = re.compile(
     r"https?://(?P<site>e-hentai|exhentai)\.org/g/(?P<gid>\d+)/(?P<token>[a-f0-9]+)/?"
 )
 
+# URL pattern for listing pages: tags, categories, uploaders, search, favorites, etc.
+# Matches any e-hentai/exhentai URL that is NOT a single gallery page.
+PAGE_URL_PATTERN = re.compile(
+    r"https?://(?P<site>e-hentai|exhentai)\.org(?P<path>/(?:tag|uploader|favorites|watched|popular|toplists|[?]f_search=).*)$"
+)
+
+# Broader check: any valid e-hentai/exhentai URL that is not a gallery
+_EH_DOMAIN_PATTERN = re.compile(
+    r"https?://(?P<site>e-hentai|exhentai)\.org(?P<path>.*)$"
+)
+
+
+def is_listing_url(url: str) -> str | None:
+    """Check if a URL is a listing page (not a single gallery).
+
+    Returns a descriptive label (e.g. 'tag', 'uploader', 'search') or None.
+    """
+    url = url.strip()
+
+    # If it's a gallery URL, it's not a listing
+    if GALLERY_URL_PATTERN.match(url):
+        return None
+
+    # Check explicit listing patterns
+    m = PAGE_URL_PATTERN.match(url)
+    if m:
+        path = m.group("path")
+        if path.startswith("/tag/"):
+            return "tag"
+        elif path.startswith("/uploader/"):
+            return "uploader"
+        elif path.startswith("/favorites"):
+            return "favorites"
+        elif path.startswith("/watched"):
+            return "watched"
+        elif path.startswith("/popular"):
+            return "popular"
+        elif path.startswith("/toplists"):
+            return "toplists"
+        elif "f_search=" in path:
+            return "search"
+        return "listing"
+
+    # Fallback: any e-hentai URL that we didn't match as gallery
+    dm = _EH_DOMAIN_PATTERN.match(url)
+    if dm:
+        path = dm.group("path")
+        # Skip single-image pages (/s/) and API endpoints
+        if path.startswith("/s/") or path.startswith("/api"):
+            return None
+        # The root page or any category-style path
+        if path in ("", "/") or path.startswith("/?"):
+            return "search"
+        return "listing"
+
+    return None
+
 
 def parse_gallery_url(url: str) -> tuple[int, str, SiteType] | None:
     """Parse a gallery URL and return (gid, token, site_type), or None if invalid."""

@@ -182,6 +182,7 @@ def print_help() -> None:
     commands = [
         ("add <url>",             "Add a gallery download task"),
         ("<url>",                 "Shortcut — paste a URL directly to add"),
+        ("<listing url>",         "Paste a tag/uploader/category URL for bulk download"),
         ("search <keyword>",     "Search galleries and browse results"),
         ("history",               "Browse download history (open, re-download)"),
         ("history -clear",        "Clear all download history"),
