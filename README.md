@@ -10,10 +10,15 @@ A command-line based gallery downloader for E-Hentai and ExHentai with an intera
 ![Command List](./demo/CommandList.png)
 *Command list and execution*
 
+![Bulk Download](./demo/BulkDownload.png)
+*Interactive bulk download configuration*
+
 ## Features
 
 - **Interactive Shell:** An intuitive, rich-text command-line interface.
 - **Smart Downloads:** Supports standard gallery downloads and automatic torrent downloads (via embedded downloader or passing to external system clients like qBittorrent).
+- **Bulk Download:** Paste a listing URL (tag, uploader, search, etc.) to bulk download. Includes an interactive results review page, customizable fetch ranges, and advanced keyword filtering (`||`, `&&`, `!`).
+- **Live Status:** Real-time progress monitoring for active downloads.
 - **Configurable:** Fully customizable settings (download directory, parallel tasks, cookies).
 - **Auto-Environment Setup:** Easy one-click setup using the provided `.bat` file for Windows.
 
