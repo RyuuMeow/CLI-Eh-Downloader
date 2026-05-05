@@ -1043,7 +1043,10 @@ class Shell:
         console.print(f"\n  [cyan]Collecting galleries from {total_pages} page(s)...[/cyan]")
 
         gallery_list: list[SearchResult] = []
+        seen_results: set[tuple[int, str]] = set()
         skipped = 0
+        duplicate_skipped = 0
+        next_page_url = first_page.next_url if page_start == 0 and first_page is not None else ""
 
         for page_idx in range(page_start, page_end + 1):
             if cfg.max_galleries > 0 and len(gallery_list) >= cfg.max_galleries:
@@ -1054,10 +1057,15 @@ class Shell:
             else:
                 console.print(f"  [dim]Fetching page {page_idx + 1}/{page_end + 1}...[/dim]")
                 try:
-                    search_page = self.manager.fetch_listing_sync(cfg.url, page=page_idx)
+                    search_page = self.manager.fetch_listing_sync(
+                        cfg.url,
+                        page=page_idx,
+                        url_override=next_page_url,
+                    )
                 except Exception as e:
                     print_error(f"Failed to fetch page {page_idx + 1}: {e}")
                     continue
+            next_page_url = search_page.next_url
 
             if not search_page.results:
                 break
@@ -1065,15 +1073,28 @@ class Shell:
             for result in search_page.results:
                 if cfg.max_galleries > 0 and len(gallery_list) >= cfg.max_galleries:
                     break
+                result_key = (result.gid, result.token)
+                if result_key in seen_results:
+                    duplicate_skipped += 1
+                    continue
                 if cfg.keyword_filter:
                     if not matches_keyword_filter(result.title, cfg.keyword_filter):
                         skipped += 1
                         continue
+                seen_results.add(result_key)
                 gallery_list.append(result)
 
+            if not next_page_url and page_idx < page_end:
+                break
+
         console.print(f"  [green]Collected {len(gallery_list)} galleries[/green]", end="")
+        notes = []
         if skipped:
-            console.print(f"  [dim]({skipped} filtered out)[/dim]")
+            notes.append(f"{skipped} filtered out")
+        if duplicate_skipped:
+            notes.append(f"{duplicate_skipped} duplicates skipped")
+        if notes:
+            console.print(f"  [dim]({', '.join(notes)})[/dim]")
         else:
             console.print()
 

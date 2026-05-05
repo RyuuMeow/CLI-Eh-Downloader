@@ -333,6 +333,7 @@ async def fetch_listing_page(
     client: EHClient,
     base_url: str,
     page: int = 0,
+    url_override: str = "",
 ) -> SearchPage:
     """Fetch a listing page (tag, uploader, category, etc.) by URL.
 
@@ -341,12 +342,15 @@ async def fetch_listing_page(
     """
     import urllib.parse
 
-    # Build the paginated URL
-    parsed = urllib.parse.urlparse(base_url)
-    params = urllib.parse.parse_qs(parsed.query)
-    params["page"] = [str(page)]
-    new_query = urllib.parse.urlencode(params, doseq=True)
-    url = urllib.parse.urlunparse(parsed._replace(query=new_query))
+    if url_override:
+        url = url_override
+    else:
+        # Build the paginated URL
+        parsed = urllib.parse.urlparse(base_url)
+        params = urllib.parse.parse_qs(parsed.query)
+        params["page"] = [str(page)]
+        new_query = urllib.parse.urlencode(params, doseq=True)
+        url = urllib.parse.urlunparse(parsed._replace(query=new_query))
 
     response = await client.get(url)
     soup = BeautifulSoup(response.text, "lxml")
