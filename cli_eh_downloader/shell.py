@@ -13,6 +13,7 @@ from prompt_toolkit.history import InMemoryHistory
 from .config import Config
 from .display import (
     console,
+    live_status_display,
     print_banner,
     print_error,
     print_help,
@@ -453,8 +454,18 @@ class Shell:
             self.manager.clear_finished()
             print_success("Cleared completed/failed/cancelled tasks.")
             return
+
         tasks = self.manager.get_all_tasks()
-        print_status_table(tasks)
+        if not tasks:
+            print_status_table(tasks)
+            return
+
+        # If any task is still active, use live-updating display
+        active = self.manager.get_active_tasks()
+        if active:
+            live_status_display(self.manager.get_all_tasks)
+        else:
+            print_status_table(tasks)
 
     # ------------------------------------------------------------------
     # History command
@@ -704,6 +715,7 @@ class Shell:
             ("retry_count", "Retry Count", str(self.config.retry_count)),
             ("prefer_torrent", "Prefer Torrent", str(self.config.prefer_torrent)),
             ("auto_select_best", "Auto Select Best Method", str(self.config.auto_select_best)),
+            ("debug_mode", "Debug Mode", str(self.config.debug_mode)),
             ("ipb_member_id", "ExH Cookie: ipb_member_id", self.config.ipb_member_id or "(not set)"),
             ("ipb_pass_hash", "ExH Cookie: ipb_pass_hash", ("***" + self.config.ipb_pass_hash[-4:]) if self.config.ipb_pass_hash else "(not set)"),
             ("igneous", "ExH Cookie: igneous", ("***" + self.config.igneous[-4:]) if self.config.igneous else "(not set)"),
@@ -755,6 +767,7 @@ class Shell:
                 ("retry_count", "Retry Count", str(self.config.retry_count)),
                 ("prefer_torrent", "Prefer Torrent", str(self.config.prefer_torrent)),
                 ("auto_select_best", "Auto Select Best Method", str(self.config.auto_select_best)),
+                ("debug_mode", "Debug Mode", str(self.config.debug_mode)),
                 ("ipb_member_id", "ExH Cookie: ipb_member_id", self.config.ipb_member_id or "(not set)"),
                 ("ipb_pass_hash", "ExH Cookie: ipb_pass_hash", ("***" + self.config.ipb_pass_hash[-4:]) if self.config.ipb_pass_hash else "(not set)"),
                 ("igneous", "ExH Cookie: igneous", ("***" + self.config.igneous[-4:]) if self.config.igneous else "(not set)"),
@@ -779,6 +792,7 @@ class Shell:
         table.add_row("retry_count", str(c.retry_count))
         table.add_row("prefer_torrent", str(c.prefer_torrent))
         table.add_row("auto_select_best", str(c.auto_select_best))
+        table.add_row("debug_mode", str(c.debug_mode))
         table.add_row("ipb_member_id", c.ipb_member_id or "[dim]not set[/dim]")
         table.add_row("ipb_pass_hash", ("***" + c.ipb_pass_hash[-4:]) if c.ipb_pass_hash else "[dim]not set[/dim]")
         table.add_row("igneous", ("***" + c.igneous[-4:]) if c.igneous else "[dim]not set[/dim]")
@@ -797,6 +811,7 @@ class Shell:
             "retry_delay": "retry_delay",
             "prefer_torrent": "prefer_torrent",
             "auto_select_best": "auto_select_best",
+            "debug_mode": "debug_mode",
             "ipb_member_id": "ipb_member_id",
             "ipb_pass_hash": "ipb_pass_hash",
             "igneous": "igneous",
@@ -824,7 +839,7 @@ class Shell:
             except ValueError:
                 print_error(f"{key} must be a number.")
                 return
-        elif attr in ("prefer_torrent", "auto_select_best"):
+        elif attr in ("prefer_torrent", "auto_select_best", "debug_mode"):
             setattr(self.config, attr, value.lower() in ("true", "1", "yes"))
         else:
             setattr(self.config, attr, value)

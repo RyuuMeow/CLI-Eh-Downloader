@@ -36,6 +36,7 @@ class Config:
 
     # Display settings
     show_japanese_title: bool = True
+    debug_mode: bool = False
 
     @property
     def has_exhentai_cookies(self) -> bool:
@@ -75,6 +76,7 @@ class Config:
             f'sk = "{self.sk}"\n',
             "\n[display]\n",
             f"show_japanese_title = {'true' if self.show_japanese_title else 'false'}\n",
+            f"debug_mode = {'true' if self.debug_mode else 'false'}\n",
         ]
         save_path.write_text("".join(lines), encoding="utf-8")
 
@@ -131,3 +133,5 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
     display = data.get("display", {})
     if "show_japanese_title" in display:
         config.show_japanese_title = bool(display["show_japanese_title"])
+    if "debug_mode" in display:
+        config.debug_mode = bool(display["debug_mode"])

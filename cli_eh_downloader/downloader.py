@@ -236,7 +236,11 @@ async def process_task(
     except Exception as e:
         log.exception("Task %d fatal error", task.id)
         task.status = TaskStatus.FAILED
-        task.error = str(e)
+        if config.debug_mode:
+            import traceback
+            task.error = f"{e}\n{traceback.format_exc()}"
+        else:
+            task.error = str(e)
         _notify(on_update, task)
 
 
