@@ -478,7 +478,7 @@ class Shell:
     # ------------------------------------------------------------------
 
     def _cmd_bulk(self, url: str, page_type: str) -> None:
-        """Handle a listing page URL — show settings then bulk download."""
+        """Handle a listing page URL — show settings, checkout, then bulk download."""
         console.print(f"\n  [bold cyan]📋 Listing page detected[/bold cyan]  [dim]({page_type})[/dim]")
         console.print(f"  [dim]{url}[/dim]")
         console.print(f"  [cyan]Fetching page info...[/cyan]")
@@ -491,28 +491,37 @@ class Shell:
 
         gallery_count = len(first_page.results)
         total_results = first_page.total_results or gallery_count
-        # Estimate total pages (e-hentai shows 25 per page typically)
         per_page = gallery_count if gallery_count > 0 else 25
         estimated_pages = max(1, (total_results + per_page - 1) // per_page)
 
         console.print(f"  [green]Found ~{total_results:,} galleries[/green] across ~[yellow]{estimated_pages:,} pages[/yellow]")
         console.print(f"  [dim]{gallery_count} galleries on current page[/dim]\n")
 
-        # Build the config object with defaults
         bulk_cfg = BulkDownloadConfig(
             url=url,
             page_type=page_type,
             total_results=total_results,
         )
 
-        # Show interactive settings menu
-        confirmed = self._bulk_settings_menu(bulk_cfg, estimated_pages)
-        if not confirmed:
-            print_info("Cancelled.")
-            return
+        # Loop: Settings ↔ Checkout → Download
+        while True:
+            confirmed = self._bulk_settings_menu(bulk_cfg, estimated_pages)
+            if not confirmed:
+                print_info("Cancelled.")
+                return
 
-        # Execute the bulk download
-        self._execute_bulk(bulk_cfg, first_page, estimated_pages)
+            # Checkout: collect and review the gallery list
+            gallery_list = self._bulk_checkout(bulk_cfg, first_page, estimated_pages)
+            if gallery_list is None:
+                # User chose "Back to Settings" — loop back
+                continue
+            if not gallery_list:
+                print_info("No galleries to download.")
+                return
+
+            # Execute download on the curated list
+            self._execute_bulk(bulk_cfg, gallery_list)
+            return
 
     def _bulk_settings_menu(self, cfg: BulkDownloadConfig, estimated_pages: int) -> bool:
         """Interactive settings menu for bulk download. Returns True if user confirms."""
@@ -567,7 +576,7 @@ class Shell:
                     disabled="",
                 ),
                 questionary.Choice(
-                    title="✅ Start Bulk Download",
+                    title="🛒 Checkout →",
                     value=_CONFIRM,
                 ),
                 questionary.Choice(
@@ -683,115 +692,196 @@ class Shell:
                 if val is not None:
                     cfg.keyword_filter = val.strip()
 
-    def _execute_bulk(self, cfg: BulkDownloadConfig, first_page, estimated_pages: int) -> None:
-        """Execute the bulk download with the given configuration."""
-        # Determine page range
+    def _bulk_checkout(
+        self, cfg: BulkDownloadConfig, first_page, estimated_pages: int,
+    ) -> list[SearchResult] | None:
+        """Collect matching galleries and show a review list.
+
+        Returns:
+            list[SearchResult] — confirmed list to download
+            None               — user chose "Back to Settings"
+        """
+        import questionary
+
+        # --- Phase 1: Collect all matching galleries ---
         if cfg.fetch_mode == FetchMode.CURRENT_PAGE:
             page_start, page_end = 0, 0
         elif cfg.fetch_mode == FetchMode.CUSTOM_RANGE:
-            page_start = cfg.start_page - 1  # convert to 0-indexed
-            page_end = cfg.end_page - 1
-        else:  # ITER
-            page_start = 0
-            page_end = estimated_pages - 1
+            page_start, page_end = cfg.start_page - 1, cfg.end_page - 1
+        else:
+            page_start, page_end = 0, estimated_pages - 1
 
         total_pages = page_end - page_start + 1
-        console.print(f"\n  [bold cyan]Starting bulk download[/bold cyan]")
-        console.print(f"  [dim]Pages {page_start + 1}–{page_end + 1} ({total_pages} pages)[/dim]\n")
+        console.print(f"\n  [cyan]Collecting galleries from {total_pages} page(s)...[/cyan]")
 
-        downloaded_count = 0
-        skipped_count = 0
-        failed_count = 0
+        gallery_list: list[SearchResult] = []
+        skipped = 0
 
         for page_idx in range(page_start, page_end + 1):
-            # Check max galleries limit
-            if cfg.max_galleries > 0 and downloaded_count >= cfg.max_galleries:
-                print_info(f"Reached max galleries limit ({cfg.max_galleries}). Stopping.")
+            if cfg.max_galleries > 0 and len(gallery_list) >= cfg.max_galleries:
                 break
 
-            # Fetch the page (reuse first_page if it's page 0)
             if page_idx == 0 and first_page is not None:
                 search_page = first_page
             else:
-                console.print(f"  [cyan]Fetching page {page_idx + 1}/{page_end + 1}...[/cyan]")
+                console.print(f"  [dim]Fetching page {page_idx + 1}/{page_end + 1}...[/dim]")
                 try:
                     search_page = self.manager.fetch_listing_sync(cfg.url, page=page_idx)
                 except Exception as e:
                     print_error(f"Failed to fetch page {page_idx + 1}: {e}")
-                    failed_count += 1
                     continue
 
             if not search_page.results:
-                print_info(f"Page {page_idx + 1}: no results.")
                 break
 
-            console.print(f"  [green]Page {page_idx + 1}[/green]: {len(search_page.results)} galleries\n")
-
             for result in search_page.results:
-                # Check max galleries limit
-                if cfg.max_galleries > 0 and downloaded_count >= cfg.max_galleries:
-                    print_info(f"Reached max galleries limit ({cfg.max_galleries}). Stopping.")
+                if cfg.max_galleries > 0 and len(gallery_list) >= cfg.max_galleries:
                     break
-
-                # Keyword filter
                 if cfg.keyword_filter:
                     if not matches_keyword_filter(result.title, cfg.keyword_filter):
-                        skipped_count += 1
+                        skipped += 1
                         continue
+                gallery_list.append(result)
 
-                # Size filter — check pages as a rough proxy (actual size checked later)
-                # We'll do a more precise check after fetching gallery info
+        console.print(f"  [green]Collected {len(gallery_list)} galleries[/green]", end="")
+        if skipped:
+            console.print(f"  [dim]({skipped} filtered out)[/dim]")
+        else:
+            console.print()
 
-                title_display = result.title[:60] if len(result.title) > 60 else result.title
-                console.print(f"  [bold]→[/bold] [{result.category}] {title_display}")
-                console.print(f"    [dim]{result.url}[/dim]")
+        if not gallery_list:
+            return []
 
-                # --- Download based on mode ---
-                if cfg.download_mode == BulkDownloadMode.ASK_EACH:
-                    # Show action menu like search results
-                    action = self._search_action_menu(result)
-                    if action != "download":
-                        skipped_count += 1
-                        continue
+        # --- Phase 2: Interactive review list ---
+        _START = "__START__"
+        _BACK_SETTINGS = "__BACK_SETTINGS__"
 
-                # Fetch gallery info
-                console.print(f"    [cyan]Fetching gallery info...[/cyan]")
-                try:
-                    gallery, torrents = self.manager.fetch_info_and_torrents_sync(result.url)
-                except Exception as e:
-                    print_error(f"    Failed to fetch: {e}")
-                    failed_count += 1
+        while True:
+            choices = []
+            for i, r in enumerate(gallery_list):
+                title = r.title[:55] if len(r.title) > 55 else r.title
+                label = f"  [{r.category}] {title}"
+                if r.pages:
+                    label += f"  |  {r.pages}p"
+                choices.append(questionary.Choice(title=label, value=i))
+
+            choices.append(questionary.Choice(
+                title="──────────────────────────────────",
+                value="_sep", disabled="",
+            ))
+            choices.append(questionary.Choice(
+                title=f"✅ Start Bulk Download ({len(gallery_list)} galleries)",
+                value=_START,
+            ))
+            choices.append(questionary.Choice(
+                title="← Back to Settings  [changes to this list will be lost]",
+                value=_BACK_SETTINGS,
+            ))
+
+            try:
+                selected = questionary.select(
+                    f"Checkout — {len(gallery_list)} galleries",
+                    choices=choices,
+                    instruction="(↑↓ select, Enter actions, Ctrl-C cancel)",
+                ).ask()
+            except KeyboardInterrupt:
+                return None
+
+            if selected is None or selected == _BACK_SETTINGS:
+                return None
+
+            if selected == _START:
+                return gallery_list
+
+            # --- Item action menu ---
+            idx = selected
+            item = gallery_list[idx]
+            item_title = item.title[:60] if len(item.title) > 60 else item.title
+
+            console.print(f"\n  [bold]{item_title}[/bold]")
+            console.print(f"  [dim]{item.url}[/dim]\n")
+
+            action_choices = [
+                questionary.Choice(title="🌐 Open in browser", value="browser"),
+                questionary.Choice(title="🗑  Remove from list", value="remove"),
+                questionary.Choice(title="← Back to list", value="back"),
+            ]
+
+            try:
+                action = questionary.select(
+                    "Action:", choices=action_choices, instruction="",
+                ).ask()
+            except KeyboardInterrupt:
+                action = "back"
+
+            if action == "browser":
+                import webbrowser
+                webbrowser.open(item.url)
+                print_success("Opened in browser.")
+            elif action == "remove":
+                gallery_list.pop(idx)
+                print_success(f"Removed from list. ({len(gallery_list)} remaining)")
+                if not gallery_list:
+                    print_info("List is now empty.")
+                    return []
+
+    def _execute_bulk(self, cfg: BulkDownloadConfig, gallery_list: list[SearchResult]) -> None:
+        """Execute the bulk download on a curated list of galleries."""
+        console.print(f"\n  [bold cyan]Starting bulk download[/bold cyan]")
+        console.print(f"  [dim]{len(gallery_list)} galleries[/dim]\n")
+
+        downloaded_count = 0
+        failed_count = 0
+        skipped_count = 0
+
+        for i, result in enumerate(gallery_list, 1):
+            title_display = result.title[:60] if len(result.title) > 60 else result.title
+            console.print(f"  [bold]→[/bold] ({i}/{len(gallery_list)}) [{result.category}] {title_display}")
+            console.print(f"    [dim]{result.url}[/dim]")
+
+            # Ask-each mode
+            if cfg.download_mode == BulkDownloadMode.ASK_EACH:
+                action = self._search_action_menu(result)
+                if action != "download":
+                    skipped_count += 1
                     continue
 
-                # Size filter (now we have actual filesize)
-                if cfg.max_size_mb > 0 and gallery.filesize:
-                    try:
-                        size_bytes = int(gallery.filesize)
-                        size_mb = size_bytes / (1024 * 1024)
-                        if size_mb > cfg.max_size_mb:
-                            print_info(f"    Skipped: {size_mb:.1f} MB > {cfg.max_size_mb:.0f} MB limit")
-                            skipped_count += 1
-                            continue
-                    except (ValueError, TypeError):
-                        pass  # Can't parse size, proceed anyway
+            # Fetch gallery info
+            console.print(f"    [cyan]Fetching gallery info...[/cyan]")
+            try:
+                gallery, torrents = self.manager.fetch_info_and_torrents_sync(result.url)
+            except Exception as e:
+                print_error(f"    Failed to fetch: {e}")
+                failed_count += 1
+                continue
 
-                title = gallery.title_jpn or gallery.title
-                console.print(f"    [bold]{title}[/bold]")
+            # Size filter
+            if cfg.max_size_mb > 0 and gallery.filesize:
+                try:
+                    size_bytes = int(gallery.filesize)
+                    size_mb = size_bytes / (1024 * 1024)
+                    if size_mb > cfg.max_size_mb:
+                        print_info(f"    Skipped: {size_mb:.1f} MB > {cfg.max_size_mb:.0f} MB limit")
+                        skipped_count += 1
+                        continue
+                except (ValueError, TypeError):
+                    pass
 
-                # Start the download
-                if cfg.download_mode == BulkDownloadMode.ASK_EACH:
-                    # Already confirmed via action menu above
-                    if self.config.auto_select_best:
-                        self._auto_download(result.url, gallery, torrents)
-                    else:
-                        self._interactive_download(result.url, gallery, torrents)
-                elif cfg.download_mode == BulkDownloadMode.DIRECT:
-                    self._start_direct(result.url, gallery)
-                else:  # AUTO
+            title = gallery.title_jpn or gallery.title
+            console.print(f"    [bold]{title}[/bold]")
+
+            if cfg.download_mode == BulkDownloadMode.ASK_EACH:
+                if self.config.auto_select_best:
                     self._auto_download(result.url, gallery, torrents)
+                else:
+                    self._interactive_download(result.url, gallery, torrents)
+            elif cfg.download_mode == BulkDownloadMode.DIRECT:
+                self._start_direct(result.url, gallery)
+            else:  # AUTO
+                self._auto_download(result.url, gallery, torrents)
 
-                downloaded_count += 1
-                console.print()
+            downloaded_count += 1
+            console.print()
 
         # Summary
         console.print(f"\n  [bold green]Bulk download complete![/bold green]")
