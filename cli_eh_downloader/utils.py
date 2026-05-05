@@ -123,3 +123,56 @@ def ensure_dir(path: str | Path) -> Path:
     p = Path(path)
     p.mkdir(parents=True, exist_ok=True)
     return p
+
+
+def matches_keyword_filter(title: str, expression: str) -> bool:
+    """Evaluate a keyword filter expression against a title.
+
+    Operators (precedence: NOT > AND > OR):
+        ||   OR  — matches if ANY group matches
+        &&   AND — matches if ALL terms in the group match
+        !    NOT — negates a single term
+
+    Examples:
+        "cat"                → title contains "cat"
+        "cat || dog"         → title contains "cat" OR "dog"
+        "cat && dog"         → title contains "cat" AND "dog"
+        "cat && !dog"        → title contains "cat" AND does NOT contain "dog"
+        "cat || dog && !fox" → title contains "cat" OR (title contains "dog" AND NOT "fox")
+    """
+    expression = expression.strip()
+    if not expression:
+        return True  # empty filter matches everything
+
+    title_lower = title.lower()
+
+    # Split by || to get OR groups
+    or_groups = expression.split("||")
+
+    for group in or_groups:
+        # Split each OR group by && to get AND terms
+        and_terms = group.split("&&")
+        group_matches = True
+
+        for term in and_terms:
+            term = term.strip()
+            if not term:
+                continue
+
+            # Check for NOT operator
+            if term.startswith("!"):
+                keyword = term[1:].strip()
+                if not keyword:
+                    continue
+                if keyword.lower() in title_lower:
+                    group_matches = False
+                    break
+            else:
+                if term.lower() not in title_lower:
+                    group_matches = False
+                    break
+
+        if group_matches:
+            return True
+
+    return False

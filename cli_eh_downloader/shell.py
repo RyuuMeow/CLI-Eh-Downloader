@@ -25,7 +25,7 @@ from .display import (
 )
 from .models import BulkDownloadConfig, BulkDownloadMode, DownloadMethod, DownloadTask, FetchMode, SearchResult, TaskStatus
 from .task_manager import TaskManager
-from .utils import GALLERY_URL_PATTERN, format_size, is_listing_url
+from .utils import GALLERY_URL_PATTERN, format_size, is_listing_url, matches_keyword_filter
 
 
 class Shell:
@@ -675,7 +675,7 @@ class Shell:
             elif selected == "keyword":
                 try:
                     val = questionary.text(
-                        "Keyword filter (title must contain, empty = none):",
+                        "Keyword filter (|| = OR, && = AND, ! = NOT, empty = none):",
                         default=cfg.keyword_filter,
                     ).ask()
                 except KeyboardInterrupt:
@@ -735,7 +735,7 @@ class Shell:
 
                 # Keyword filter
                 if cfg.keyword_filter:
-                    if cfg.keyword_filter.lower() not in result.title.lower():
+                    if not matches_keyword_filter(result.title, cfg.keyword_filter):
                         skipped_count += 1
                         continue
 
