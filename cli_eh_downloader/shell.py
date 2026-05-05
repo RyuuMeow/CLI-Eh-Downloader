@@ -501,6 +501,7 @@ class Shell:
             url=url,
             page_type=page_type,
             total_results=total_results,
+            download_dir=self.config.download_dir,
         )
 
         # Loop: Settings ↔ Checkout → Download
@@ -548,6 +549,7 @@ class Shell:
             max_gal_display = str(cfg.max_galleries) if cfg.max_galleries > 0 else "Unlimited"
             max_size_display = f"{cfg.max_size_mb:.0f} MB" if cfg.max_size_mb > 0 else "No limit"
             keyword_display = cfg.keyword_filter if cfg.keyword_filter else "(none)"
+            dir_display = cfg.download_dir or self.config.download_dir
 
             choices = [
                 questionary.Choice(
@@ -569,6 +571,10 @@ class Shell:
                 questionary.Choice(
                     title=f"🔍 Keyword Filter:   {keyword_display}",
                     value="keyword",
+                ),
+                questionary.Choice(
+                    title=f"📂 Download Dir:     {dir_display}",
+                    value="download_dir",
                 ),
                 questionary.Choice(
                     title="──────────────────────────────────",
@@ -691,6 +697,17 @@ class Shell:
                     continue
                 if val is not None:
                     cfg.keyword_filter = val.strip()
+
+            elif selected == "download_dir":
+                try:
+                    val = questionary.text(
+                        "Download directory:",
+                        default=cfg.download_dir or self.config.download_dir,
+                    ).ask()
+                except KeyboardInterrupt:
+                    continue
+                if val is not None:
+                    cfg.download_dir = val.strip()
 
     def _bulk_checkout(
         self, cfg: BulkDownloadConfig, first_page, estimated_pages: int,
@@ -828,7 +845,12 @@ class Shell:
     def _execute_bulk(self, cfg: BulkDownloadConfig, gallery_list: list[SearchResult]) -> None:
         """Execute the bulk download on a curated list of galleries."""
         console.print(f"\n  [bold cyan]Starting bulk download[/bold cyan]")
-        console.print(f"  [dim]{len(gallery_list)} galleries[/dim]\n")
+        console.print(f"  [dim]{len(gallery_list)} galleries → {cfg.download_dir}[/dim]\n")
+
+        # Temporarily override download dir
+        original_dir = self.config.download_dir
+        if cfg.download_dir:
+            self.config.download_dir = cfg.download_dir
 
         downloaded_count = 0
         failed_count = 0
@@ -891,6 +913,9 @@ class Shell:
         if failed_count:
             console.print(f"  [red]✗ Failed: {failed_count}[/red]")
         console.print()
+
+        # Restore original download dir
+        self.config.download_dir = original_dir
 
 
     # ------------------------------------------------------------------

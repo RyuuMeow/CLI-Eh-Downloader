@@ -162,4 +162,5 @@ class BulkDownloadConfig:
     max_galleries: int = 0                           # 0 = unlimited
     max_size_mb: float = 0.0                         # 0 = no limit (in MB)
     keyword_filter: str = ""                         # Only download if title contains this
+    download_dir: str = ""                           # Override download dir (empty = global)
     total_results: int = 0                           # Populated after first fetch
