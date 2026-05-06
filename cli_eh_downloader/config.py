@@ -46,6 +46,16 @@ class Config:
     search_download_gallery_onclick: bool = False
     search_no_sub_menu: bool = False
 
+    # Sorting settings
+    auto_sort: str = "off"  # auto, artist, keyword, off
+    sort_by_keyword_keywords: str = ""
+    auto_sort_artist_priority: int = 10
+    auto_sort_keyword_priority: int = 20
+
+    # Filter settings
+    anti_ai: bool = False
+    filter_keyword_filter: str = ""
+
     # Page download settings (last used values)
     page_download_fetch_mode: str = "current"  # iter, current, range
     page_download_start_page: int = 1
@@ -111,6 +121,14 @@ class Config:
             f"open_gallery_website_onclick = {'true' if self.search_open_gallery_website_onclick else 'false'}\n",
             f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
             f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
+            "\n[sorting]\n",
+            f"auto_sort = {_toml_string(_normalize_auto_sort(self.auto_sort))}\n",
+            f"sort_by_keyword_keywords = {_toml_string(self.sort_by_keyword_keywords)}\n",
+            f"auto_sort_artist_priority = {self.auto_sort_artist_priority}\n",
+            f"auto_sort_keyword_priority = {self.auto_sort_keyword_priority}\n",
+            "\n[filter]\n",
+            f"anti_ai = {'true' if self.anti_ai else 'false'}\n",
+            f"keyword_filter = {_toml_string(self.filter_keyword_filter)}\n",
             "\n[page_download]\n",
             f"fetch_mode = {_toml_string(_normalize_page_fetch_mode(self.page_download_fetch_mode))}\n",
             f"start_page = {self.page_download_start_page}\n",
@@ -125,7 +143,7 @@ class Config:
 
 
 def load_config(path: str | Path | None = None) -> Config:
-    """Load configuration from a TOML file. Falls back to defaults."""
+    """Load configuration from a TOML file and create/backfill it when needed."""
     config = Config()
 
     config_path: Path | None = None
@@ -136,13 +154,72 @@ def load_config(path: str | Path | None = None) -> Config:
             if p.exists():
                 config_path = p
                 break
+        if config_path is None:
+            config_path = DEFAULT_CONFIG_PATHS[0]
 
+    should_save = False
     if config_path and config_path.exists():
         with open(config_path, "rb") as f:
             data = tomllib.load(f)
         _apply_config(config, data)
+        should_save = _config_has_missing_fields(data)
+    else:
+        should_save = True
+
+    if config_path and should_save:
+        config.save(config_path)
 
     return config
+
+
+def _config_has_missing_fields(data: dict[str, Any]) -> bool:
+    required: dict[str, tuple[str, ...]] = {
+        "download": (
+            "download_dir",
+            "max_parallel",
+            "rate_limit_delay",
+            "retry_count",
+            "retry_delay",
+            "prefer_torrent",
+            "default_download_mode",
+            "fast_queue",
+        ),
+        "cookies": ("ipb_member_id", "ipb_pass_hash", "igneous", "sk"),
+        "display": ("show_japanese_title", "debug_mode"),
+        "search": (
+            "bulk_mode_default",
+            "open_result_website_automatically",
+            "open_gallery_website_onclick",
+            "download_gallery_onclick",
+            "no_sub_menu",
+        ),
+        "sorting": (
+            "auto_sort",
+            "sort_by_keyword_keywords",
+            "auto_sort_artist_priority",
+            "auto_sort_keyword_priority",
+        ),
+        "filter": ("anti_ai", "keyword_filter"),
+        "page_download": (
+            "fetch_mode",
+            "start_page",
+            "end_page",
+            "download_mode",
+            "max_galleries",
+            "max_size_mb",
+            "keyword_filter",
+            "download_dir",
+        ),
+    }
+
+    for section, keys in required.items():
+        section_data = data.get(section)
+        if not isinstance(section_data, dict):
+            return True
+        for key in keys:
+            if key not in section_data:
+                return True
+    return False
 
 
 def _apply_config(config: Config, data: dict[str, Any]) -> None:
@@ -195,6 +272,24 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
     if "no_sub_menu" in search:
         config.search_no_sub_menu = bool(search["no_sub_menu"])
 
+    sorting = data.get("sorting", {})
+    if "auto_sort" in sorting:
+        config.auto_sort = _normalize_auto_sort(str(sorting["auto_sort"]))
+    if "sort_by_keyword_keywords" in sorting:
+        config.sort_by_keyword_keywords = str(sorting["sort_by_keyword_keywords"])
+    elif "keywords" in sorting:
+        config.sort_by_keyword_keywords = str(sorting["keywords"])
+    if "auto_sort_artist_priority" in sorting:
+        config.auto_sort_artist_priority = int(sorting["auto_sort_artist_priority"])
+    if "auto_sort_keyword_priority" in sorting:
+        config.auto_sort_keyword_priority = int(sorting["auto_sort_keyword_priority"])
+
+    filters = data.get("filter", {})
+    if "anti_ai" in filters:
+        config.anti_ai = bool(filters["anti_ai"])
+    if "keyword_filter" in filters:
+        config.filter_keyword_filter = str(filters["keyword_filter"])
+
     page_download = data.get("page_download", {})
     if "fetch_mode" in page_download:
         config.page_download_fetch_mode = _normalize_page_fetch_mode(str(page_download["fetch_mode"]))
@@ -224,6 +319,22 @@ def _normalize_download_mode(value: str) -> str:
         "direct_download": "direct",
     }
     return aliases.get(normalized, "auto")
+
+
+def _normalize_auto_sort(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "auto": "auto",
+        "artist": "artist",
+        "sort_by_artist": "artist",
+        "keyword": "keyword",
+        "sort_by_keyword": "keyword",
+        "off": "off",
+        "none": "off",
+        "false": "off",
+        "disabled": "off",
+    }
+    return aliases.get(normalized, "off")
 
 
 def _normalize_page_fetch_mode(value: str) -> str:

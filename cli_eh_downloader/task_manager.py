@@ -106,6 +106,7 @@ class TaskManager:
         download_dir: Optional[str] = None,
         max_size_mb: float = 0.0,
         fast_queue: bool = False,
+        apply_filters: bool = False,
         on_update: Callable[[DownloadTask], None] | None = None,
     ) -> DownloadTask:
         """Add a new download task. Returns the task immediately (non-blocking)."""
@@ -122,6 +123,7 @@ class TaskManager:
             download_dir=download_dir,
             max_size_mb=max_size_mb,
             fast_queue=fast_queue,
+            apply_filters=apply_filters,
         )
         with self._lock:
             self._tasks[task_id] = task

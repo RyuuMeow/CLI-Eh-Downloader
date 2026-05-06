@@ -24,6 +24,7 @@ from .display import (
     print_task_update,
 )
 from .models import BulkDownloadConfig, BulkDownloadMode, DownloadMethod, DownloadTask, FetchMode, SearchResult, TaskStatus
+from .sorting import gallery_filter_reason, resolve_sorted_download_dir, search_result_filter_reason
 from .task_manager import TaskManager
 from .utils import GALLERY_URL_PATTERN, format_size, is_listing_url, matches_keyword_filter
 
@@ -169,6 +170,7 @@ class Shell:
         mode: str | None = None,
         download_dir: str | None = None,
         max_size_mb: float = 0.0,
+        apply_filters: bool = False,
     ) -> bool:
         mode = mode or self.config.default_download_mode
         if not self._fast_queue_enabled(mode):
@@ -180,6 +182,7 @@ class Shell:
             download_dir=download_dir,
             max_size_mb=max_size_mb,
             fast_queue=True,
+            apply_filters=apply_filters,
             on_update=self._on_task_update,
         )
         print_task_added(task)
@@ -191,7 +194,6 @@ class Shell:
 
         # Filter out 0-seed torrents — they are dead and not useful
         viable_torrents = [t for t in torrents if t.seeds > 0]
-
         if viable_torrents and self.config.prefer_torrent:
             best = viable_torrents[0]  # sorted by seeds
 
@@ -209,7 +211,8 @@ class Shell:
                 print_task_added(task)
             else:
                 # Torrent-only: save .torrent, open with client, record in history. Done.
-                torrent_path = self._save_and_open_torrent(best)
+                sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
+                torrent_path = self._save_and_open_torrent(best, sorted_dir)
                 if torrent_path:
                     from .downloader import save_torrent_metadata
                     save_torrent_metadata(gallery, torrent_path, self.config)
@@ -291,7 +294,8 @@ class Shell:
 
         # Torrent without libtorrent: save .torrent, record in history, done.
         if method == DownloadMethod.TORRENT and not HAS_LIBTORRENT and torrent_info:
-            torrent_path = self._save_and_open_torrent(torrent_info)
+            sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
+            torrent_path = self._save_and_open_torrent(torrent_info, sorted_dir)
             if torrent_path:
                 from .downloader import save_torrent_metadata
                 save_torrent_metadata(gallery, torrent_path, self.config)
@@ -310,7 +314,7 @@ class Shell:
         print_task_added(task)
         return True
 
-    def _save_and_open_torrent(self, torrent_info) -> str | None:
+    def _save_and_open_torrent(self, torrent_info, download_dir: str | None = None) -> str | None:
         """Download .torrent file and open with system torrent client. Returns path or None."""
         console.print("  [cyan]Downloading .torrent...[/cyan]")
         try:
@@ -326,7 +330,7 @@ class Shell:
 
             # Try qBittorrent first (supports --save-path)
             gallery_dir = str(
-                __import__("pathlib").Path(self.config.download_dir).resolve()
+                __import__("pathlib").Path(download_dir or self.config.download_dir).resolve()
             )
             qbt = shutil.which("qbittorrent")
             if qbt:
@@ -381,7 +385,7 @@ class Shell:
             webbrowser.open(current_search_url)
 
         while True:
-            results = search_page.results
+            results, filtered_count = self._filter_search_results(search_page.results)
             total = search_page.total_results
 
             console.clear()
@@ -391,6 +395,8 @@ class Shell:
             total_str = f"{total:,}" if total else f"{len(results)}+"
             page_display = current_page + 1
             console.print(f"  [cyan]Search: {query}[/cyan]  |  [green]{total_str} results[/green]  |  [yellow]Page {page_display}[/yellow]\n")
+            if filtered_count:
+                console.print(f"  [yellow]Filtered out {filtered_count} result(s) by global filters[/yellow]\n")
 
             selected_action = self._search_select(
                 f"Page {page_display}  ({len(results)} on this page)",
@@ -577,7 +583,10 @@ class Shell:
         if cursor_choice[0] == "result" and cursor_choice[1] is not None and results:
             cursor_choice = ("result", min(cursor_choice[1], len(results) - 1))
         if cursor_choice not in values:
-            cursor_choice = ("result", 0)
+            cursor_choice = next(
+                choice.value for choice in choices
+                if isinstance(getattr(choice, "value", None), tuple)
+            )
 
         ic = InquirerControl(
             choices,
@@ -693,8 +702,18 @@ class Shell:
             return [("fg:ansicyan", label)]
         return label
 
+    def _filter_search_results(self, results: list[SearchResult]) -> tuple[list[SearchResult], int]:
+        filtered: list[SearchResult] = []
+        skipped = 0
+        for result in results:
+            if search_result_filter_reason(result, self.config):
+                skipped += 1
+                continue
+            filtered.append(result)
+        return filtered, skipped
+
     def _search_download_result(self, result: SearchResult, downloaded_gids: set[int]) -> bool:
-        if self._queue_fast_download(result.url):
+        if self._queue_fast_download(result.url, apply_filters=True):
             downloaded_gids.add(result.gid)
             return True
 
@@ -707,6 +726,11 @@ class Shell:
 
         title = gallery.title_jpn or gallery.title
         console.print(f"  [bold]{title}[/bold]")
+
+        reason = gallery_filter_reason(gallery, self.config)
+        if reason:
+            print_info(f"Skipped by filter: {reason}")
+            return False
 
         started = self._default_download(result.url, gallery, torrents)
         if started:
@@ -778,7 +802,7 @@ class Shell:
         if self.config.fast_queue and mode in ("direct", "auto"):
             queued_count = 0
             for result in results:
-                if self._queue_fast_download(result.url, mode=mode):
+                if self._queue_fast_download(result.url, mode=mode, apply_filters=True):
                     downloaded_gids.add(result.gid)
                     queued_count += 1
             print_success(f"Bulk download queued {queued_count} result(s).")
@@ -796,6 +820,11 @@ class Shell:
             except Exception as e:
                 failed_count += 1
                 print_error(f"Failed to fetch: {e}")
+                continue
+
+            reason = gallery_filter_reason(gallery, self.config)
+            if reason:
+                print_info(f"Skipped by filter: {reason}")
                 continue
 
             if mode == "direct":
@@ -1167,6 +1196,9 @@ class Shell:
                     if not matches_keyword_filter(result.title, cfg.keyword_filter):
                         skipped += 1
                         continue
+                if search_result_filter_reason(result, self.config):
+                    skipped += 1
+                    continue
                 seen_results.add(result_key)
                 gallery_list.append(result)
 
@@ -1389,6 +1421,7 @@ class Shell:
                     mode=mode,
                     download_dir=cfg.download_dir,
                     max_size_mb=cfg.max_size_mb,
+                    apply_filters=True,
                 ):
                     queued_count += 1
                     console.print()
@@ -1401,6 +1434,12 @@ class Shell:
             except Exception as e:
                 print_error(f"    Failed to fetch: {e}")
                 failed_count += 1
+                continue
+
+            reason = gallery_filter_reason(gallery, self.config)
+            if reason:
+                print_info(f"    Skipped by filter: {reason}")
+                skipped_count += 1
                 continue
 
             # Size filter
@@ -2272,11 +2311,18 @@ class Shell:
             "search_open_gallery_website_onclick",
             "search_download_gallery_onclick",
             "search_no_sub_menu",
+            "anti_ai",
         }
         mode_labels = {
             "auto": "Auto",
             "ask": "Ask",
             "direct": "Direct Download",
+        }
+        sort_labels = {
+            "auto": "Auto",
+            "artist": "Sort by Artist",
+            "keyword": "Sort by keyword",
+            "off": "Off",
         }
         sections = [
             (
@@ -2318,12 +2364,34 @@ class Shell:
                     ("search_no_sub_menu", "No Sub-Menu"),
                 ],
             ),
+            (
+                "Sorting",
+                [
+                    ("auto_sort", "Auto Sort"),
+                    ("sort_by_keyword_keywords", "Sort by keyword keywords"),
+                    ("auto_sort_priority", "Auto Sort Priority"),
+                ],
+            ),
+            (
+                "Filter",
+                [
+                    ("anti_ai", "Anti AI"),
+                    ("filter_keyword_filter", "Keyword filter"),
+                ],
+            ),
         ]
 
         def display_value(key: str) -> str:
             value = getattr(self.config, key, "")
             if key == "default_download_mode":
                 return mode_labels.get(value, "Auto")
+            if key == "auto_sort":
+                return sort_labels.get(value, "Off")
+            if key == "auto_sort_priority":
+                return (
+                    f"Artist={self.config.auto_sort_artist_priority}, "
+                    f"Keyword={self.config.auto_sort_keyword_priority}"
+                )
             if key in ("ipb_pass_hash", "igneous", "sk") and value:
                 return "***" + str(value)[-4:]
             if value == "":
@@ -2389,6 +2457,56 @@ class Shell:
                         ).ask()
                     except KeyboardInterrupt:
                         new_value = None
+                elif selected_key == "auto_sort":
+                    try:
+                        new_value = questionary.select(
+                            "Auto Sort:",
+                            choices=[
+                                questionary.Choice(title="Auto", value="auto"),
+                                questionary.Choice(title="Sort by Artist", value="artist"),
+                                questionary.Choice(title="Sort by keyword", value="keyword"),
+                                questionary.Choice(title="Off", value="off"),
+                            ],
+                            default=current,
+                            instruction="(↑↓ select, Enter confirm, Ctrl-C back)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        new_value = None
+                elif selected_key == "auto_sort_priority":
+                    priority_items = [
+                        ("auto_sort_artist_priority", "Sort by Artist"),
+                        ("auto_sort_keyword_priority", "Sort by keyword"),
+                    ]
+                    priority_choices = [
+                        questionary.Choice(
+                            title=f"{label}: {getattr(self.config, key)}",
+                            value=key,
+                        )
+                        for key, label in priority_items
+                    ]
+                    priority_choices.append(questionary.Choice(title="← Back", value=_BACK))
+                    try:
+                        priority_key = questionary.select(
+                            "Auto Sort Priority:",
+                            choices=priority_choices,
+                            instruction="(lower number wins)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        priority_key = None
+                    if not priority_key or priority_key == _BACK:
+                        continue
+                    try:
+                        priority_value = questionary.text(
+                            f"New value for {priority_key}:",
+                            default=str(getattr(self.config, priority_key)),
+                            validate=lambda x: x.lstrip("-").isdigit(),
+                        ).ask()
+                    except KeyboardInterrupt:
+                        priority_value = None
+                    if priority_value is None:
+                        continue
+                    self._set_config(priority_key, priority_value)
+                    continue
                 elif selected_key in bool_keys:
                     try:
                         new_value = questionary.select(
@@ -2456,6 +2574,12 @@ class Shell:
             ("Search", "open_gallery_website_onclick", str(c.search_open_gallery_website_onclick)),
             ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
             ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
+            ("Sorting", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
+            ("Sorting", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
+            ("Sorting", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
+            ("Sorting", "auto_sort_keyword_priority", str(c.auto_sort_keyword_priority)),
+            ("Filter", "anti_ai", str(c.anti_ai)),
+            ("Filter", "keyword_filter", c.filter_keyword_filter or "[dim]not set[/dim]"),
             ("Page Download", "fetch_mode", c.page_download_fetch_mode),
             ("Page Download", "start_page", str(c.page_download_start_page)),
             ("Page Download", "end_page", str(c.page_download_end_page)),
@@ -2472,7 +2596,7 @@ class Shell:
         console.print(table)
 
     def _set_config(self, key: str, value: str) -> None:
-        from .config import _normalize_download_mode
+        from .config import _normalize_auto_sort, _normalize_download_mode
 
         key = key.lower().replace("-", "_")
 
@@ -2507,6 +2631,18 @@ class Shell:
             "search_download_gallery_onclick": "search_download_gallery_onclick",
             "no_sub_menu": "search_no_sub_menu",
             "search_no_sub_menu": "search_no_sub_menu",
+            "auto_sort": "auto_sort",
+            "sort": "auto_sort",
+            "sorting": "auto_sort",
+            "sort_by_keyword_keywords": "sort_by_keyword_keywords",
+            "sort_keywords": "sort_by_keyword_keywords",
+            "auto_sort_artist_priority": "auto_sort_artist_priority",
+            "sort_artist_priority": "auto_sort_artist_priority",
+            "auto_sort_keyword_priority": "auto_sort_keyword_priority",
+            "sort_keyword_priority": "auto_sort_keyword_priority",
+            "anti_ai": "anti_ai",
+            "keyword_filter": "filter_keyword_filter",
+            "filter_keyword_filter": "filter_keyword_filter",
         }
 
         attr = config_map.get(key)
@@ -2515,7 +2651,7 @@ class Shell:
             return
 
         # Type coercion
-        if attr in ("max_parallel", "retry_count"):
+        if attr in ("max_parallel", "retry_count", "auto_sort_artist_priority", "auto_sort_keyword_priority"):
             try:
                 setattr(self.config, attr, int(value))
             except ValueError:
@@ -2529,6 +2665,8 @@ class Shell:
                 return
         elif attr == "default_download_mode":
             self.config.default_download_mode = _normalize_download_mode(value)
+        elif attr == "auto_sort":
+            self.config.auto_sort = _normalize_auto_sort(value)
         elif attr == "auto_select_best":
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
         elif attr in (
@@ -2541,6 +2679,7 @@ class Shell:
             "search_open_gallery_website_onclick",
             "search_download_gallery_onclick",
             "search_no_sub_menu",
+            "anti_ai",
         ):
             setattr(self.config, attr, value.lower() in ("true", "1", "yes", "on", "enabled"))
         else:

@@ -107,6 +107,7 @@ class DownloadTask:
     max_size_mb: float = 0.0
     fast_queue: bool = False
     notice: Optional[str] = None
+    apply_filters: bool = False
 
     @property
     def display_title(self) -> str:

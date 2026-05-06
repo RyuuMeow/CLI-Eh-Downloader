@@ -20,6 +20,7 @@ from .models import (
     TaskStatus,
 )
 from .parser import fetch_gallery_info, fetch_image_list, fetch_image_url, fetch_torrent_list
+from .sorting import gallery_filter_reason, resolve_sorted_download_dir
 from .torrent import HAS_LIBTORRENT, download_torrent_file, download_via_torrent
 from .utils import ensure_dir, parse_gallery_url, sanitize_filename
 
@@ -79,6 +80,14 @@ async def process_task(
 
         task.total = gallery.file_count
 
+        if task.apply_filters:
+            reason = gallery_filter_reason(gallery, config)
+            if reason:
+                task.status = TaskStatus.CANCELLED
+                task.error = f"Skipped by filter: {reason}"
+                _notify(on_update, task)
+                return
+
         if task.max_size_mb > 0 and gallery.filesize:
             try:
                 size_mb = int(gallery.filesize) / (1024 * 1024)
@@ -92,7 +101,7 @@ async def process_task(
 
         # Determine output directory (images only go here)
         dir_name = sanitize_filename(gallery.title_jpn or gallery.title)
-        download_dir = task.download_dir or config.download_dir
+        download_dir = resolve_sorted_download_dir(task.download_dir or config.download_dir, gallery, config)
         task.output_dir = str(Path(download_dir) / dir_name)
 
         _notify(on_update, task)
@@ -171,7 +180,7 @@ async def process_task(
                     task.downloaded = task.total
                     external_msg = _open_torrent_external(
                         torrent_path,
-                        task.download_dir or config.download_dir,
+                        download_dir,
                     )
                     _set_fast_queue_notice(
                         task,

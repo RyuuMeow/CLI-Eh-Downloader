@@ -45,6 +45,22 @@ download_gallery_onclick = false
 # Skip the per-result action menu when clicking a search result (single mode only)
 no_sub_menu = false
 
+[sorting]
+# Gallery folder sorting: auto, artist, keyword, off
+auto_sort = "off"
+# Comma-separated keywords for keyword sorting. Earlier keywords have higher priority.
+sort_by_keyword_keywords = ""
+# Lower number wins when auto_sort = "auto" and both artist/keyword are available.
+auto_sort_artist_priority = 10
+auto_sort_keyword_priority = 20
+
+[filter]
+# Filter AI-related title keywords and tags in search/page downloads.
+# Direct gallery URL downloads are not filtered.
+anti_ai = false
+# Comma-separated keywords to exclude from search/page downloads.
+keyword_filter = ""
+
 [page_download]
 # Last used page download settings. These are overwritten whenever checkout is opened.
 # Fetch mode: iter, current, range
