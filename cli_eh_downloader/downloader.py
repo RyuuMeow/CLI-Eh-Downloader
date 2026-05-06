@@ -79,17 +79,39 @@ async def process_task(
 
         task.total = gallery.file_count
 
+        if task.max_size_mb > 0 and gallery.filesize:
+            try:
+                size_mb = int(gallery.filesize) / (1024 * 1024)
+                if size_mb > task.max_size_mb:
+                    task.status = TaskStatus.CANCELLED
+                    task.error = f"Skipped: {size_mb:.1f} MB > {task.max_size_mb:.0f} MB limit"
+                    _notify(on_update, task)
+                    return
+            except (ValueError, TypeError):
+                pass
+
         # Determine output directory (images only go here)
         dir_name = sanitize_filename(gallery.title_jpn or gallery.title)
-        task.output_dir = str(Path(config.download_dir) / dir_name)
+        download_dir = task.download_dir or config.download_dir
+        task.output_dir = str(Path(download_dir) / dir_name)
         ensure_dir(task.output_dir)
 
         _notify(on_update, task)
 
         # --- Step 3: Try torrent if preferred or forced ---
+        direct_reason: str | None = None
         method_to_use = task.force_method
         if not method_to_use:
-            method_to_use = DownloadMethod.TORRENT if config.prefer_torrent and gallery.torrent_count > 0 else DownloadMethod.DIRECT
+            if config.prefer_torrent and gallery.torrent_count > 0:
+                method_to_use = DownloadMethod.TORRENT
+            else:
+                method_to_use = DownloadMethod.DIRECT
+                if not config.prefer_torrent:
+                    direct_reason = "Prefer Torrent is disabled"
+                else:
+                    direct_reason = "this gallery has no listed torrents"
+        elif method_to_use == DownloadMethod.DIRECT:
+            direct_reason = "Download Mode is Direct Download"
 
         if method_to_use == DownloadMethod.TORRENT and gallery.torrent_count > 0:
             task.status = TaskStatus.CHECKING_TORRENT
@@ -100,7 +122,7 @@ async def process_task(
                 try:
                     torrents = await fetch_torrent_list(client, gallery)
                     if torrents:
-                        best_torrent = torrents[0]  # Already sorted by seeds
+                        best_torrent = next((t for t in torrents if t.seeds > 0), torrents[0])
                 except Exception as e:
                     log.warning("Failed to fetch torrent list: %s", e)
 
@@ -118,6 +140,10 @@ async def process_task(
                 if torrent_path and HAS_LIBTORRENT and best_torrent.seeds > 0:
                     task.method = DownloadMethod.TORRENT
                     task.status = TaskStatus.DOWNLOADING
+                    _set_fast_queue_notice(
+                        task,
+                        f"Task #{task.id}: using torrent ({best_torrent.seeds} seed(s); Prefer Torrent enabled).",
+                    )
                     _notify(on_update, task)
 
                     def _torrent_progress(progress: float, downloaded: int, total: int) -> None:
@@ -137,16 +163,41 @@ async def process_task(
                         return
                     else:
                         log.warning("Torrent download failed/timed out. Falling back to direct download.")
+                        direct_reason = "torrent download failed or timed out"
                 elif torrent_path and not HAS_LIBTORRENT:
-                    log.info(
-                        "libtorrent not installed. .torrent saved to: %s — falling back to direct download.",
+                    task.method = DownloadMethod.TORRENT
+                    task.status = TaskStatus.COMPLETED
+                    task.progress = 1.0
+                    task.downloaded = task.total
+                    external_msg = _open_torrent_external(
                         torrent_path,
+                        task.download_dir or config.download_dir,
                     )
+                    _set_fast_queue_notice(
+                        task,
+                        (
+                            f"Task #{task.id}: using torrent via external client "
+                            f"({best_torrent.seeds} seed(s); embedded libtorrent unavailable). {external_msg}"
+                        ),
+                    )
+                    _save_torrent_task_metadata(task, config)
+                    _notify(on_update, task)
+                    return
+                elif best_torrent.seeds <= 0:
+                    direct_reason = "available torrents have 0 seeds"
+                else:
+                    direct_reason = "torrent file could not be saved"
+            else:
+                direct_reason = "torrent list could not be loaded"
 
         # --- Step 4: Direct image download (fallback or primary) ---
         task.method = DownloadMethod.DIRECT
         task.status = TaskStatus.DOWNLOADING
         task.downloaded = 0
+        _set_fast_queue_notice(
+            task,
+            f"Task #{task.id}: using direct download ({direct_reason or 'Direct Download selected'}).",
+        )
         _notify(on_update, task)
 
         images = await fetch_image_list(client, gallery)
@@ -264,6 +315,7 @@ def _save_metadata(task: DownloadTask, config: Config) -> None:
         "posted": g.posted,
         "output_dir": task.output_dir,
         "method": task.method.value,
+        "torrent_path": task.torrent_path,
         "downloaded_at": datetime.now().isoformat(),
     }
 
@@ -301,6 +353,35 @@ def save_torrent_metadata(gallery, torrent_path: str, config: Config) -> None:
     safe_name = sanitize_filename(title)
     meta_path = meta_dir / f"{safe_name}.json"
     meta_path.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def _save_torrent_task_metadata(task: DownloadTask, config: Config) -> None:
+    if not task.gallery or not task.torrent_path:
+        return
+    save_torrent_metadata(task.gallery, task.torrent_path, config)
+
+
+def _open_torrent_external(torrent_path: str, download_dir: str) -> str:
+    import os
+    import shutil
+    import subprocess
+
+    target_dir = str(Path(download_dir).resolve())
+    qbt = shutil.which("qbittorrent")
+    if qbt:
+        subprocess.Popen([qbt, f"--save-path={target_dir}", torrent_path])
+        return "Opened with qBittorrent."
+
+    try:
+        os.startfile(torrent_path)
+        return "Opened with default torrent client."
+    except OSError:
+        return f"No torrent client found; saved .torrent at {torrent_path}."
+
+
+def _set_fast_queue_notice(task: DownloadTask, message: str) -> None:
+    if task.fast_queue:
+        task.notice = message
 
 
 def _notify(callback: ProgressCallback, task: DownloadTask) -> None:

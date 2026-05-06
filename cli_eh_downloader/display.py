@@ -164,7 +164,7 @@ def live_status_display(
             console=console,
             refresh_per_second=4,
             transient=False,
-            vertical_overflow="visible",
+            vertical_overflow="ellipsis",
         ) as live:
             while True:
                 time.sleep(refresh_rate)
@@ -194,7 +194,8 @@ def print_help() -> None:
         (
             "Tasks",
             [
-                ("status / s", "Show all task statuses (live refresh if active)"),
+                ("status / s", "Show all task statuses"),
+                ("status -live", "Show live-refreshing task statuses"),
                 ("status -clear", "Remove finished tasks from status"),
                 ("cancel", "Open the bulk cancel menu"),
                 ("cancel <id>", "Cancel one task by task id"),

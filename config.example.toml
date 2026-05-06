@@ -16,6 +16,8 @@ retry_delay = 5.0
 prefer_torrent = true
 # Default download mode: auto, ask, direct
 default_download_mode = "auto"
+# Queue auto/direct downloads immediately and fetch gallery info in the background
+fast_queue = true
 
 [cookies]
 # Required for ExHentai access. Get these from your browser cookies.
@@ -42,3 +44,18 @@ open_gallery_website_onclick = false
 download_gallery_onclick = false
 # Skip the per-result action menu when clicking a search result (single mode only)
 no_sub_menu = false
+
+[page_download]
+# Last used page download settings. These are overwritten whenever checkout is opened.
+# Fetch mode: iter, current, range
+fetch_mode = "current"
+start_page = 1
+end_page = 1
+# Download mode: auto, ask, direct
+download_mode = "auto"
+# 0 = unlimited
+max_galleries = 0
+# 0 = no limit
+max_size_mb = 0.0
+keyword_filter = ""
+download_dir = ""

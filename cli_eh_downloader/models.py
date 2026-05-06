@@ -103,6 +103,10 @@ class DownloadTask:
     torrent_path: Optional[str] = None
     selected_torrent: Optional[TorrentInfo] = None
     force_method: Optional[DownloadMethod] = None
+    download_dir: Optional[str] = None
+    max_size_mb: float = 0.0
+    fast_queue: bool = False
+    notice: Optional[str] = None
 
     @property
     def display_title(self) -> str:

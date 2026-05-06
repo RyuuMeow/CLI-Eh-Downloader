@@ -103,6 +103,9 @@ class TaskManager:
         gallery: Optional[GalleryInfo] = None,
         force_method: Optional[DownloadMethod] = None,
         selected_torrent: Optional[TorrentInfo] = None,
+        download_dir: Optional[str] = None,
+        max_size_mb: float = 0.0,
+        fast_queue: bool = False,
         on_update: Callable[[DownloadTask], None] | None = None,
     ) -> DownloadTask:
         """Add a new download task. Returns the task immediately (non-blocking)."""
@@ -115,7 +118,10 @@ class TaskManager:
             url=url,
             gallery=gallery,
             force_method=force_method,
-            selected_torrent=selected_torrent
+            selected_torrent=selected_torrent,
+            download_dir=download_dir,
+            max_size_mb=max_size_mb,
+            fast_queue=fast_queue,
         )
         with self._lock:
             self._tasks[task_id] = task

@@ -65,6 +65,7 @@ async def fetch_gallery_info(client: EHClient, gid: int, token: str, site: SiteT
 async def fetch_image_list(client: EHClient, gallery: GalleryInfo) -> list[GalleryImage]:
     """Fetch the list of image page URLs from all gallery pages."""
     images: list[GalleryImage] = []
+    missing_page_reasons: list[str] = []
 
     # Calculate number of gallery listing pages (typically 20 or 40 per page)
     # We use 20 as a conservative estimate; the actual count is determined by page content
@@ -72,15 +73,16 @@ async def fetch_image_list(client: EHClient, gallery: GalleryInfo) -> list[Galle
 
     for page_num in range(total_pages):
         page_url = f"{gallery.url}?p={page_num}"
-        response = await client.get(page_url)
-        soup = BeautifulSoup(response.text, "lxml")
+        soup = await _fetch_gallery_page_soup(client, page_url)
 
         # The #gdt container holds all thumbnails
         # Each thumbnail is an <a> directly inside #gdt (large mode: class="gt200")
         # or inside <div class="gdtm"> (normal mode) or <div class="gdtl"> (large mode)
         gdt = soup.select_one("#gdt")
         if not gdt:
-            log.warning("No #gdt found on page %d", page_num)
+            reason = _describe_missing_gdt_page(soup)
+            missing_page_reasons.append(f"page {page_num}: {reason}")
+            log.debug("No #gdt found on page %d: %s", page_num, reason)
             continue
 
         links = gdt.select("a[href]")
@@ -114,7 +116,45 @@ async def fetch_image_list(client: EHClient, gallery: GalleryInfo) -> list[Galle
             break
 
     log.info("Total image pages found: %d (expected: %d)", len(images), gallery.file_count)
+    if not images and missing_page_reasons:
+        raise ValueError(f"Could not read gallery image list ({missing_page_reasons[0]})")
     return images
+
+
+async def _fetch_gallery_page_soup(client: EHClient, page_url: str) -> BeautifulSoup:
+    response = await client.get(page_url)
+    soup = BeautifulSoup(response.text, "lxml")
+
+    if soup.select_one("#gdt"):
+        return soup
+
+    warning_link = _find_view_gallery_link(soup)
+    if warning_link:
+        response = await client.get(warning_link)
+        soup = BeautifulSoup(response.text, "lxml")
+
+    return soup
+
+
+def _find_view_gallery_link(soup: BeautifulSoup) -> str:
+    for link in soup.select("a[href]"):
+        if link.get_text(" ", strip=True).lower() == "view gallery":
+            return link["href"]
+    return ""
+
+
+def _describe_missing_gdt_page(soup: BeautifulSoup) -> str:
+    text = soup.get_text(" ", strip=True)
+    if "Content Warning" in text and "View Gallery" in text:
+        return "content warning page was not bypassed"
+    if "This gallery has been removed" in text or "Gallery not found" in text:
+        return "gallery is unavailable"
+    if "Your IP address has been temporarily banned" in text:
+        return "temporary IP ban"
+    title = soup.select_one("title")
+    if title:
+        return f"unexpected page: {title.get_text(' ', strip=True)}"
+    return "unexpected page without thumbnail container"
 
 
 async def fetch_image_url(client: EHClient, image: GalleryImage) -> GalleryImage:

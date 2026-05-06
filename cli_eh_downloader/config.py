@@ -27,6 +27,7 @@ class Config:
     retry_delay: float = 5.0
     prefer_torrent: bool = True
     default_download_mode: str = "auto"  # auto, ask, direct
+    fast_queue: bool = True
 
     # Cookie settings (for ExHentai)
     ipb_member_id: str = ""
@@ -44,6 +45,16 @@ class Config:
     search_open_gallery_website_onclick: bool = False
     search_download_gallery_onclick: bool = False
     search_no_sub_menu: bool = False
+
+    # Page download settings (last used values)
+    page_download_fetch_mode: str = "current"  # iter, current, range
+    page_download_start_page: int = 1
+    page_download_end_page: int = 1
+    page_download_mode: str = "auto"  # auto, ask, direct
+    page_download_max_galleries: int = 0
+    page_download_max_size_mb: float = 0.0
+    page_download_keyword_filter: str = ""
+    page_download_dir: str = ""
 
     @property
     def auto_select_best(self) -> bool:
@@ -78,18 +89,19 @@ class Config:
         lines = [
             "# CLI-Eh-Downloader Configuration\n",
             "\n[download]\n",
-            f'download_dir = "{self.download_dir}"\n',
+            f"download_dir = {_toml_string(self.download_dir)}\n",
             f"max_parallel = {self.max_parallel}\n",
             f"rate_limit_delay = {self.rate_limit_delay}\n",
             f"retry_count = {self.retry_count}\n",
             f"retry_delay = {self.retry_delay}\n",
             f"prefer_torrent = {'true' if self.prefer_torrent else 'false'}\n",
-            f'default_download_mode = "{self.default_download_mode}"\n',
+            f"default_download_mode = {_toml_string(_normalize_download_mode(self.default_download_mode))}\n",
+            f"fast_queue = {'true' if self.fast_queue else 'false'}\n",
             "\n[cookies]\n",
-            f'ipb_member_id = "{self.ipb_member_id}"\n',
-            f'ipb_pass_hash = "{self.ipb_pass_hash}"\n',
-            f'igneous = "{self.igneous}"\n',
-            f'sk = "{self.sk}"\n',
+            f"ipb_member_id = {_toml_string(self.ipb_member_id)}\n",
+            f"ipb_pass_hash = {_toml_string(self.ipb_pass_hash)}\n",
+            f"igneous = {_toml_string(self.igneous)}\n",
+            f"sk = {_toml_string(self.sk)}\n",
             "\n[display]\n",
             f"show_japanese_title = {'true' if self.show_japanese_title else 'false'}\n",
             f"debug_mode = {'true' if self.debug_mode else 'false'}\n",
@@ -99,6 +111,15 @@ class Config:
             f"open_gallery_website_onclick = {'true' if self.search_open_gallery_website_onclick else 'false'}\n",
             f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
             f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
+            "\n[page_download]\n",
+            f"fetch_mode = {_toml_string(_normalize_page_fetch_mode(self.page_download_fetch_mode))}\n",
+            f"start_page = {self.page_download_start_page}\n",
+            f"end_page = {self.page_download_end_page}\n",
+            f"download_mode = {_toml_string(_normalize_download_mode(self.page_download_mode))}\n",
+            f"max_galleries = {self.page_download_max_galleries}\n",
+            f"max_size_mb = {self.page_download_max_size_mb}\n",
+            f"keyword_filter = {_toml_string(self.page_download_keyword_filter)}\n",
+            f"download_dir = {_toml_string(self.page_download_dir)}\n",
         ]
         save_path.write_text("".join(lines), encoding="utf-8")
 
@@ -143,6 +164,8 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.default_download_mode = _normalize_download_mode(str(dl["default_download_mode"]))
     elif "auto_select_best" in dl:
         config.default_download_mode = "auto" if bool(dl["auto_select_best"]) else "ask"
+    if "fast_queue" in dl:
+        config.fast_queue = bool(dl["fast_queue"])
 
     cookies = data.get("cookies", {})
     if "ipb_member_id" in cookies:
@@ -172,6 +195,24 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
     if "no_sub_menu" in search:
         config.search_no_sub_menu = bool(search["no_sub_menu"])
 
+    page_download = data.get("page_download", {})
+    if "fetch_mode" in page_download:
+        config.page_download_fetch_mode = _normalize_page_fetch_mode(str(page_download["fetch_mode"]))
+    if "start_page" in page_download:
+        config.page_download_start_page = max(1, int(page_download["start_page"]))
+    if "end_page" in page_download:
+        config.page_download_end_page = max(1, int(page_download["end_page"]))
+    if "download_mode" in page_download:
+        config.page_download_mode = _normalize_download_mode(str(page_download["download_mode"]))
+    if "max_galleries" in page_download:
+        config.page_download_max_galleries = max(0, int(page_download["max_galleries"]))
+    if "max_size_mb" in page_download:
+        config.page_download_max_size_mb = max(0.0, float(page_download["max_size_mb"]))
+    if "keyword_filter" in page_download:
+        config.page_download_keyword_filter = str(page_download["keyword_filter"])
+    if "download_dir" in page_download:
+        config.page_download_dir = str(page_download["download_dir"])
+
 
 def _normalize_download_mode(value: str) -> str:
     normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
@@ -183,3 +224,29 @@ def _normalize_download_mode(value: str) -> str:
         "direct_download": "direct",
     }
     return aliases.get(normalized, "auto")
+
+
+def _normalize_page_fetch_mode(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "iter": "iter",
+        "all": "iter",
+        "all_pages": "iter",
+        "current": "current",
+        "current_page": "current",
+        "range": "range",
+        "custom": "range",
+        "custom_range": "range",
+    }
+    return aliases.get(normalized, "current")
+
+
+def _toml_string(value: str) -> str:
+    escaped = (
+        value.replace("\\", "\\\\")
+        .replace('"', '\\"')
+        .replace("\r", "\\r")
+        .replace("\n", "\\n")
+        .replace("\t", "\\t")
+    )
+    return f'"{escaped}"'

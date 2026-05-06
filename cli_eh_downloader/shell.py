@@ -144,6 +144,9 @@ class Shell:
             print_error("Invalid gallery URL.")
             return
 
+        if self._queue_fast_download(url):
+            return
+
         console.print("  [cyan]Fetching gallery info...[/cyan]")
         try:
             gallery, torrents = self.manager.fetch_info_and_torrents_sync(url)
@@ -156,7 +159,33 @@ class Shell:
 
         self._default_download(url, gallery, torrents)
 
-    def _auto_download(self, url, gallery, torrents) -> bool:
+    def _fast_queue_enabled(self, mode: str | None = None) -> bool:
+        mode = mode or self.config.default_download_mode
+        return self.config.fast_queue and mode in ("auto", "direct")
+
+    def _queue_fast_download(
+        self,
+        url: str,
+        mode: str | None = None,
+        download_dir: str | None = None,
+        max_size_mb: float = 0.0,
+    ) -> bool:
+        mode = mode or self.config.default_download_mode
+        if not self._fast_queue_enabled(mode):
+            return False
+
+        task = self.manager.add_task(
+            url,
+            force_method=DownloadMethod.DIRECT if mode == "direct" else None,
+            download_dir=download_dir,
+            max_size_mb=max_size_mb,
+            fast_queue=True,
+            on_update=self._on_task_update,
+        )
+        print_task_added(task)
+        return True
+
+    def _auto_download(self, url, gallery, torrents, download_dir: str | None = None, max_size_mb: float = 0.0) -> bool:
         """Auto-select best method and start download without prompts. Returns True."""
         from .torrent import HAS_LIBTORRENT
 
@@ -173,6 +202,8 @@ class Shell:
                     gallery=gallery,
                     force_method=DownloadMethod.TORRENT,
                     selected_torrent=best,
+                    download_dir=download_dir,
+                    max_size_mb=max_size_mb,
                     on_update=self._on_task_update,
                 )
                 print_task_added(task)
@@ -185,21 +216,23 @@ class Shell:
                     print_success("Torrent saved & opened. Download via torrent client.")
                 else:
                     # Fallback to direct if torrent save failed
-                    self._start_direct(url, gallery)
+                    self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
             return True
 
         # No viable torrent (all 0 seeds or none available) → direct download
         if torrents and not viable_torrents:
             print_info("All torrents have 0 seeds, using direct download.")
-        self._start_direct(url, gallery)
+        self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
         return True
 
-    def _start_direct(self, url, gallery):
+    def _start_direct(self, url, gallery, download_dir: str | None = None, max_size_mb: float = 0.0):
         """Start a direct image download task."""
         task = self.manager.add_task(
             url,
             gallery=gallery,
             force_method=DownloadMethod.DIRECT,
+            download_dir=download_dir,
+            max_size_mb=max_size_mb,
             on_update=self._on_task_update,
         )
         print_task_added(task)
@@ -213,7 +246,7 @@ class Shell:
             return self._interactive_download(url, gallery, torrents)
         return self._auto_download(url, gallery, torrents)
 
-    def _interactive_download(self, url, gallery, torrents):
+    def _interactive_download(self, url, gallery, torrents, download_dir: str | None = None, max_size_mb: float = 0.0):
         """Show interactive selector for download method."""
         import questionary
         from .torrent import HAS_LIBTORRENT
@@ -270,6 +303,8 @@ class Shell:
             gallery=gallery,
             force_method=method,
             selected_torrent=torrent_info,
+            download_dir=download_dir,
+            max_size_mb=max_size_mb,
             on_update=self._on_task_update,
         )
         print_task_added(task)
@@ -659,6 +694,10 @@ class Shell:
         return label
 
     def _search_download_result(self, result: SearchResult, downloaded_gids: set[int]) -> bool:
+        if self._queue_fast_download(result.url):
+            downloaded_gids.add(result.gid)
+            return True
+
         console.print(f"  [cyan]Fetching gallery info...[/cyan]")
         try:
             gallery, torrents = self.manager.fetch_info_and_torrents_sync(result.url)
@@ -736,6 +775,15 @@ class Shell:
         if not mode or mode == "back":
             return
 
+        if self.config.fast_queue and mode in ("direct", "auto"):
+            queued_count = 0
+            for result in results:
+                if self._queue_fast_download(result.url, mode=mode):
+                    downloaded_gids.add(result.gid)
+                    queued_count += 1
+            print_success(f"Bulk download queued {queued_count} result(s).")
+            return
+
         started_count = 0
         failed_count = 0
         for i, result in enumerate(results, 1):
@@ -777,12 +825,15 @@ class Shell:
             print_status_table(tasks)
             return
 
-        # If any task is still active, use live-updating display
-        active = self.manager.get_active_tasks()
-        if active:
-            live_status_display(self.manager.get_all_tasks)
-        else:
-            print_status_table(tasks)
+        if args and args[0] in ("-live", "--live", "live"):
+            active = self.manager.get_active_tasks()
+            if active:
+                live_status_display(self.manager.get_all_tasks)
+            else:
+                print_status_table(tasks)
+            return
+
+        print_status_table(tasks)
 
     # ------------------------------------------------------------------
     # Bulk download (listing page)
@@ -814,6 +865,7 @@ class Shell:
             total_results=total_results,
             download_dir=self.config.download_dir,
         )
+        self._apply_page_download_memory(bulk_cfg, estimated_pages)
 
         # Loop: Settings ↔ Checkout → Download
         while True:
@@ -915,6 +967,7 @@ class Shell:
                 return False
 
             if selected == _CONFIRM:
+                self._save_page_download_memory(cfg)
                 return True
 
             # --- Edit individual settings ---
@@ -1020,6 +1073,41 @@ class Shell:
                 if val is not None:
                     cfg.download_dir = val.strip()
 
+    def _apply_page_download_memory(self, cfg: BulkDownloadConfig, estimated_pages: int) -> None:
+        fetch_modes = {
+            "iter": FetchMode.ITER,
+            "current": FetchMode.CURRENT_PAGE,
+            "range": FetchMode.CUSTOM_RANGE,
+        }
+        download_modes = {
+            "ask": BulkDownloadMode.ASK_EACH,
+            "direct": BulkDownloadMode.DIRECT,
+            "auto": BulkDownloadMode.AUTO,
+        }
+
+        cfg.fetch_mode = fetch_modes.get(self.config.page_download_fetch_mode, FetchMode.CURRENT_PAGE)
+        cfg.start_page = min(max(1, self.config.page_download_start_page), estimated_pages)
+        cfg.end_page = min(max(cfg.start_page, self.config.page_download_end_page), estimated_pages)
+        cfg.download_mode = download_modes.get(self.config.page_download_mode, BulkDownloadMode.AUTO)
+        cfg.max_galleries = max(0, self.config.page_download_max_galleries)
+        cfg.max_size_mb = max(0.0, self.config.page_download_max_size_mb)
+        cfg.keyword_filter = self.config.page_download_keyword_filter
+        cfg.download_dir = self.config.page_download_dir or self.config.download_dir
+
+    def _save_page_download_memory(self, cfg: BulkDownloadConfig) -> None:
+        self.config.page_download_fetch_mode = cfg.fetch_mode.value
+        self.config.page_download_start_page = max(1, cfg.start_page)
+        self.config.page_download_end_page = max(1, cfg.end_page)
+        self.config.page_download_mode = cfg.download_mode.value
+        self.config.page_download_max_galleries = max(0, cfg.max_galleries)
+        self.config.page_download_max_size_mb = max(0.0, cfg.max_size_mb)
+        self.config.page_download_keyword_filter = cfg.keyword_filter
+        self.config.page_download_dir = cfg.download_dir
+        try:
+            self.config.save()
+        except Exception as e:
+            print_error(f"Failed to save page download settings: {e}")
+
     def _bulk_checkout(
         self, cfg: BulkDownloadConfig, first_page, estimated_pages: int,
     ) -> list[SearchResult] | None:
@@ -1029,8 +1117,6 @@ class Shell:
             list[SearchResult] — confirmed list to download
             None               — user chose "Back to Settings"
         """
-        import questionary
-
         # --- Phase 1: Collect all matching galleries ---
         if cfg.fetch_mode == FetchMode.CURRENT_PAGE:
             page_start, page_end = 0, 0
@@ -1102,77 +1188,174 @@ class Shell:
             return []
 
         # --- Phase 2: Interactive review list ---
-        _START = "__START__"
-        _BACK_SETTINGS = "__BACK_SETTINGS__"
+        selected: set[int] = set(range(len(gallery_list)))
+        cursor_choice = ("toggle", 0)
 
         while True:
-            choices = []
-            for i, r in enumerate(gallery_list):
-                title = r.title[:55] if len(r.title) > 55 else r.title
-                label = f"  [{r.category}] {title}"
-                if r.pages:
-                    label += f"  |  {r.pages}p"
-                choices.append(questionary.Choice(title=label, value=i))
+            if cursor_choice[0] == "toggle" and cursor_choice[1] is not None:
+                cursor_choice = ("toggle", min(cursor_choice[1], len(gallery_list) - 1))
 
-            choices.append(questionary.Choice(
-                title="──────────────────────────────────",
-                value="_sep", disabled="",
-            ))
-            choices.append(questionary.Choice(
-                title=f"✅ Start Bulk Download ({len(gallery_list)} galleries)",
-                value=_START,
-            ))
-            choices.append(questionary.Choice(
-                title="← Back to Settings  [changes to this list will be lost]",
-                value=_BACK_SETTINGS,
-            ))
+            choice = self._bulk_checkout_select(
+                f"Checkout - {len(gallery_list)} galleries",
+                gallery_list,
+                selected,
+                cursor_choice,
+            )
 
-            try:
-                selected = questionary.select(
-                    f"Checkout — {len(gallery_list)} galleries",
-                    choices=choices,
-                    instruction="(↑↓ select, Enter actions, Ctrl-C cancel)",
-                ).ask()
-            except KeyboardInterrupt:
+            if choice is None:
                 return None
 
-            if selected is None or selected == _BACK_SETTINGS:
+            action, idx = choice
+            cursor_choice = choice
+
+            if action == "back_settings":
                 return None
+            if action == "start":
+                return [gallery_list[i] for i in sorted(selected)]
 
-            if selected == _START:
-                return gallery_list
+    def _bulk_checkout_select(
+        self,
+        title: str,
+        results: list[SearchResult],
+        selected: set[int],
+        cursor_choice: tuple[str, int | None],
+    ) -> tuple[str, int | None] | None:
+        from prompt_toolkit.application import Application
+        from prompt_toolkit.key_binding import KeyBindings
+        from prompt_toolkit.keys import Keys
+        from questionary import utils
+        from questionary.constants import DEFAULT_QUESTION_PREFIX, DEFAULT_SELECTED_POINTER
+        from questionary.prompts import common
+        from questionary.prompts.common import Choice, InquirerControl, Separator
+        from questionary.question import Question
+        from questionary.styles import merge_styles_default
 
-            # --- Item action menu ---
-            idx = selected
-            item = gallery_list[idx]
-            item_title = item.title[:60] if len(item.title) > 60 else item.title
+        result_choices = [
+            Choice(
+                title=self._bulk_checkout_choice_label(result, i in selected),
+                value=("toggle", i),
+            )
+            for i, result in enumerate(results)
+        ]
+        select_all_choice = Choice(title="Select All", value=("select_all", None))
+        unselect_all_choice = Choice(title="Unselect All", value=("unselect_all", None))
+        reverse_selection_choice = Choice(title="Reverse Selection", value=("reverse_selection", None))
+        start_choice = Choice(title="", value=("start", None))
+        back_choice = Choice(title="Back to Settings  [changes to this list will be lost]", value=("back_settings", None))
+        choices = [
+            *result_choices,
+            Separator("-------------------"),
+            select_all_choice,
+            unselect_all_choice,
+            reverse_selection_choice,
+            Separator("-------------------"),
+            start_choice,
+            back_choice,
+        ]
 
-            console.print(f"\n  [bold]{item_title}[/bold]")
-            console.print(f"  [dim]{item.url}[/dim]\n")
+        def sync_titles() -> None:
+            for i, choice in enumerate(result_choices):
+                choice.title = self._bulk_checkout_choice_label(results[i], i in selected)
+            start_choice.title = f"Start Bulk Download ({len(selected)}/{len(results)} selected)"
 
-            action_choices = [
-                questionary.Choice(title="🌐 Open in browser", value="browser"),
-                questionary.Choice(title="🗑  Remove from list", value="remove"),
-                questionary.Choice(title="← Back to list", value="back"),
+        sync_titles()
+
+        values = {choice.value for choice in choices if isinstance(choice, Choice)}
+        if cursor_choice not in values:
+            cursor_choice = ("toggle", 0)
+
+        ic = InquirerControl(
+            choices,
+            default=None,
+            pointer=DEFAULT_SELECTED_POINTER,
+            use_indicator=False,
+            use_shortcuts=False,
+            show_selected=False,
+            show_description=True,
+            use_arrow_keys=True,
+            initial_choice=cursor_choice,
+        )
+
+        def get_prompt_tokens():
+            return [
+                ("class:qmark", DEFAULT_QUESTION_PREFIX),
+                ("class:question", f" {title} "),
+                ("class:instruction", "(Enter select/unselect, Ctrl-C back)"),
             ]
 
-            try:
-                action = questionary.select(
-                    "Action:", choices=action_choices, instruction="",
-                ).ask()
-            except KeyboardInterrupt:
-                action = "back"
+        layout = common.create_inquirer_layout(ic, get_prompt_tokens)
+        bindings = KeyBindings()
 
-            if action == "browser":
-                import webbrowser
-                webbrowser.open(item.url)
-                print_success("Opened in browser.")
-            elif action == "remove":
-                gallery_list.pop(idx)
-                print_success(f"Removed from list. ({len(gallery_list)} remaining)")
-                if not gallery_list:
-                    print_info("List is now empty.")
-                    return []
+        @bindings.add(Keys.ControlQ, eager=True)
+        @bindings.add(Keys.ControlC, eager=True)
+        def _(event):
+            event.app.exit(result=None)
+
+        def move_cursor_down(event):
+            ic.select_next()
+            while not ic.is_selection_valid():
+                ic.select_next()
+
+        def move_cursor_up(event):
+            ic.select_previous()
+            while not ic.is_selection_valid():
+                ic.select_previous()
+
+        bindings.add(Keys.Down, eager=True)(move_cursor_down)
+        bindings.add(Keys.Up, eager=True)(move_cursor_up)
+        bindings.add("j", eager=True)(move_cursor_down)
+        bindings.add("k", eager=True)(move_cursor_up)
+        bindings.add(Keys.ControlN, eager=True)(move_cursor_down)
+        bindings.add(Keys.ControlP, eager=True)(move_cursor_up)
+
+        @bindings.add(Keys.ControlM, eager=True)
+        def set_answer(event):
+            action, idx = ic.get_pointed_at().value
+            if action == "toggle" and idx is not None:
+                if idx in selected:
+                    selected.remove(idx)
+                else:
+                    selected.add(idx)
+                sync_titles()
+                event.app.invalidate()
+            elif action == "select_all":
+                selected.update(range(len(results)))
+                sync_titles()
+                event.app.invalidate()
+            elif action == "unselect_all":
+                selected.clear()
+                sync_titles()
+                event.app.invalidate()
+            elif action == "reverse_selection":
+                selected.symmetric_difference_update(range(len(results)))
+                sync_titles()
+                event.app.invalidate()
+            else:
+                event.app.exit(result=(action, idx))
+
+        @bindings.add(Keys.Any)
+        def other(event):
+            pass
+
+        question = Question(
+            Application(
+                layout=layout,
+                key_bindings=bindings,
+                style=merge_styles_default([None]),
+                **utils.used_kwargs({}, Application.__init__),
+            )
+        )
+        return question.ask()
+
+    def _bulk_checkout_choice_label(self, result: SearchResult, is_selected: bool):
+        marker = "[x]" if is_selected else "[ ]"
+        title = result.title[:55] if len(result.title) > 55 else result.title
+        label = f"{marker} [{result.category}] {title}"
+        if result.pages:
+            label += f"  |  {result.pages}p"
+        if is_selected:
+            return [("fg:ansicyan", label)]
+        return label
 
     def _execute_bulk(self, cfg: BulkDownloadConfig, gallery_list: list[SearchResult]) -> None:
         """Execute the bulk download on a curated list of galleries."""
@@ -1184,7 +1367,7 @@ class Shell:
         if cfg.download_dir:
             self.config.download_dir = cfg.download_dir
 
-        downloaded_count = 0
+        queued_count = 0
         failed_count = 0
         skipped_count = 0
 
@@ -1198,6 +1381,17 @@ class Shell:
                 action = self._search_action_menu(result)
                 if action != "download":
                     skipped_count += 1
+                    continue
+            elif self.config.fast_queue:
+                mode = "direct" if cfg.download_mode == BulkDownloadMode.DIRECT else "auto"
+                if self._queue_fast_download(
+                    result.url,
+                    mode=mode,
+                    download_dir=cfg.download_dir,
+                    max_size_mb=cfg.max_size_mb,
+                ):
+                    queued_count += 1
+                    console.print()
                     continue
 
             # Fetch gallery info
@@ -1225,18 +1419,35 @@ class Shell:
             console.print(f"    [bold]{title}[/bold]")
 
             if cfg.download_mode == BulkDownloadMode.ASK_EACH:
-                self._default_download(result.url, gallery, torrents)
+                self._interactive_download(
+                    result.url,
+                    gallery,
+                    torrents,
+                    download_dir=cfg.download_dir,
+                    max_size_mb=cfg.max_size_mb,
+                )
             elif cfg.download_mode == BulkDownloadMode.DIRECT:
-                self._start_direct(result.url, gallery)
+                self._start_direct(
+                    result.url,
+                    gallery,
+                    download_dir=cfg.download_dir,
+                    max_size_mb=cfg.max_size_mb,
+                )
             else:  # AUTO
-                self._auto_download(result.url, gallery, torrents)
+                self._auto_download(
+                    result.url,
+                    gallery,
+                    torrents,
+                    download_dir=cfg.download_dir,
+                    max_size_mb=cfg.max_size_mb,
+                )
 
-            downloaded_count += 1
+            queued_count += 1
             console.print()
 
         # Summary
         console.print(f"\n  [bold green]Bulk download complete![/bold green]")
-        console.print(f"  [green]✓ Downloaded: {downloaded_count}[/green]")
+        console.print(f"  [green]✓ Queued: {queued_count}[/green]")
         if skipped_count:
             console.print(f"  [yellow]⏭ Skipped: {skipped_count}[/yellow]")
         if failed_count:
@@ -1789,6 +2000,10 @@ class Shell:
                 started += 1
                 continue
 
+            if self._queue_fast_download(url, mode=mode):
+                started += 1
+                continue
+
             console.print("  [cyan]Fetching gallery info...[/cyan]")
             try:
                 gallery, torrents = self.manager.fetch_info_and_torrents_sync(url)
@@ -2049,6 +2264,7 @@ class Shell:
         _BACK = "__BACK__"
         bool_keys = {
             "prefer_torrent",
+            "fast_queue",
             "show_japanese_title",
             "debug_mode",
             "search_bulk_mode_default",
@@ -2075,6 +2291,7 @@ class Shell:
                 [
                     ("download_dir", "Download Directory"),
                     ("default_download_mode", "Default Download Mode"),
+                    ("fast_queue", "Fast Queue"),
                     ("prefer_torrent", "Prefer Torrent"),
                     ("max_parallel", "Max Parallel Downloads"),
                     ("rate_limit_delay", "Rate Limit Delay (seconds)"),
@@ -2223,6 +2440,7 @@ class Shell:
             ("General", "debug_mode", str(c.debug_mode)),
             ("Download", "download_dir", c.download_dir),
             ("Download", "default_download_mode", mode_labels.get(c.default_download_mode, "Auto")),
+            ("Download", "fast_queue", str(c.fast_queue)),
             ("Download", "prefer_torrent", str(c.prefer_torrent)),
             ("Download", "max_parallel", str(c.max_parallel)),
             ("Download", "rate_limit_delay", f"{c.rate_limit_delay}s"),
@@ -2238,6 +2456,14 @@ class Shell:
             ("Search", "open_gallery_website_onclick", str(c.search_open_gallery_website_onclick)),
             ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
             ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
+            ("Page Download", "fetch_mode", c.page_download_fetch_mode),
+            ("Page Download", "start_page", str(c.page_download_start_page)),
+            ("Page Download", "end_page", str(c.page_download_end_page)),
+            ("Page Download", "download_mode", mode_labels.get(c.page_download_mode, "Auto")),
+            ("Page Download", "max_galleries", str(c.page_download_max_galleries)),
+            ("Page Download", "max_size_mb", str(c.page_download_max_size_mb)),
+            ("Page Download", "keyword_filter", c.page_download_keyword_filter or "[dim]not set[/dim]"),
+            ("Page Download", "download_dir", c.page_download_dir or "[dim]not set[/dim]"),
         ]
 
         for section, key, value in rows:
@@ -2257,6 +2483,7 @@ class Shell:
             "retry_count": "retry_count",
             "retry_delay": "retry_delay",
             "prefer_torrent": "prefer_torrent",
+            "fast_queue": "fast_queue",
             "default_download_mode": "default_download_mode",
             "download_mode": "default_download_mode",
             "mode": "default_download_mode",
@@ -2306,6 +2533,7 @@ class Shell:
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
         elif attr in (
             "prefer_torrent",
+            "fast_queue",
             "show_japanese_title",
             "debug_mode",
             "search_bulk_mode_default",
@@ -2329,6 +2557,16 @@ class Shell:
     # ------------------------------------------------------------------
 
     def _on_task_update(self, task: DownloadTask) -> None:
+        if task.notice:
+            print_info(task.notice)
+            task.notice = None
+
+        if task.fast_queue and task.status in (
+            TaskStatus.FETCHING_INFO,
+            TaskStatus.CHECKING_TORRENT,
+        ):
+            return
+
         if task.status in (
             TaskStatus.FETCHING_INFO,
             TaskStatus.CHECKING_TORRENT,

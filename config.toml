@@ -8,6 +8,7 @@ retry_count = 3
 retry_delay = 5.0
 prefer_torrent = true
 default_download_mode = "auto"
+fast_queue = true
 
 [cookies]
 ipb_member_id = ""
@@ -25,3 +26,13 @@ open_result_website_automatically = true
 open_gallery_website_onclick = false
 download_gallery_onclick = false
 no_sub_menu = false
+
+[page_download]
+fetch_mode = "current"
+start_page = 1
+end_page = 1
+download_mode = "auto"
+max_galleries = 0
+max_size_mb = 0.0
+keyword_filter = ""
+download_dir = "./downloads"
