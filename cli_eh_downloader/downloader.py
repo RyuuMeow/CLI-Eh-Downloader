@@ -94,7 +94,6 @@ async def process_task(
         dir_name = sanitize_filename(gallery.title_jpn or gallery.title)
         download_dir = task.download_dir or config.download_dir
         task.output_dir = str(Path(download_dir) / dir_name)
-        ensure_dir(task.output_dir)
 
         _notify(on_update, task)
 
@@ -140,6 +139,7 @@ async def process_task(
                 if torrent_path and HAS_LIBTORRENT and best_torrent.seeds > 0:
                     task.method = DownloadMethod.TORRENT
                     task.status = TaskStatus.DOWNLOADING
+                    ensure_dir(task.output_dir)
                     _set_fast_queue_notice(
                         task,
                         f"Task #{task.id}: using torrent ({best_torrent.seeds} seed(s); Prefer Torrent enabled).",
@@ -194,6 +194,7 @@ async def process_task(
         task.method = DownloadMethod.DIRECT
         task.status = TaskStatus.DOWNLOADING
         task.downloaded = 0
+        ensure_dir(task.output_dir)
         _set_fast_queue_notice(
             task,
             f"Task #{task.id}: using direct download ({direct_reason or 'Direct Download selected'}).",
