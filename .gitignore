@@ -182,3 +182,4 @@ cython_debug/
 /.torrents
 /.meta
 /.idea
+config.toml
