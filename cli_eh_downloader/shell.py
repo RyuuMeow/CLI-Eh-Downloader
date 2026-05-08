@@ -2686,6 +2686,8 @@ class Shell:
             setattr(self.config, attr, value)
 
         self.config.save()
+        if attr == "debug_mode":
+            self._set_runtime_log_level(self.config.debug_mode)
         if attr == "auto_select_best":
             print_success(f"default_download_mode = {self.config.default_download_mode}")
         else:
@@ -2694,6 +2696,17 @@ class Shell:
     # ------------------------------------------------------------------
     # Callbacks & lifecycle
     # ------------------------------------------------------------------
+
+    def _set_runtime_log_level(self, debug_mode: bool) -> None:
+        import logging
+
+        level = logging.DEBUG if debug_mode else logging.WARNING
+        root = logging.getLogger()
+        root.setLevel(level)
+        for handler in root.handlers:
+            handler.setLevel(level)
+        for logger_name in ("httpx", "httpcore", "hpack", "h2", "asyncio"):
+            logging.getLogger(logger_name).setLevel(logging.WARNING)
 
     def _on_task_update(self, task: DownloadTask) -> None:
         if task.notice:

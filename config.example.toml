@@ -30,7 +30,7 @@ sk = ""
 [display]
 # Show Japanese title when available
 show_japanese_title = true
-# Enable debug logging
+# Enable detailed HTTP/download logs and full task tracebacks
 debug_mode = false
 
 [search]

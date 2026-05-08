@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from typing import Callable, List
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.panel import Panel
 from rich.table import Table
@@ -15,6 +16,16 @@ from .models import DownloadMethod, DownloadTask, TaskStatus
 from .torrent import HAS_LIBTORRENT
 
 console = Console()
+
+
+def _make_live_console() -> Console:
+    """Create a console that keeps Rich Live in terminal-refresh mode."""
+    return Console(
+        file=sys.stdout,
+        force_terminal=True,
+        color_system=console.color_system,
+        legacy_windows=console.legacy_windows,
+    )
 
 # Status → (colour, icon)
 _STATUS_STYLE: dict[TaskStatus, tuple[str, str]] = {
@@ -28,6 +39,53 @@ _STATUS_STYLE: dict[TaskStatus, tuple[str, str]] = {
     TaskStatus.PAUSED:           ("yellow",       "⏸️"),
     TaskStatus.CANCELLED:        ("dim",          "🚫"),
 }
+
+_ASCII_STATUS_ICON: dict[TaskStatus, str] = {
+    TaskStatus.QUEUED: "...",
+    TaskStatus.FETCHING_INFO: "GET",
+    TaskStatus.CHECKING_TORRENT: "TOR",
+    TaskStatus.DOWNLOADING: "DL",
+    TaskStatus.SEEDING: "SEED",
+    TaskStatus.COMPLETED: "OK",
+    TaskStatus.FAILED: "FAIL",
+    TaskStatus.PAUSED: "PAUSE",
+    TaskStatus.CANCELLED: "CANCEL",
+}
+
+
+def _supports_unicode() -> bool:
+    encoding = (getattr(sys.stdout, "encoding", None) or "").lower()
+    return "utf" in encoding
+
+
+def _can_encode(text: str) -> bool:
+    encoding = getattr(sys.stdout, "encoding", None) or "utf-8"
+    try:
+        text.encode(encoding)
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def _status_style(status: TaskStatus) -> tuple[str, str]:
+    style, icon = _STATUS_STYLE.get(status, ("", "?"))
+    if not _supports_unicode():
+        icon = _ASCII_STATUS_ICON.get(status, "?")
+    return style, icon
+
+
+def _progress_bar(filled: int, empty: int, *, markup: bool = False) -> str:
+    fill_char = "\u2588" if _can_encode("\u2588") else "#"
+    empty_char = "\u2591" if _can_encode("\u2591") else " "
+    if markup:
+        return f"[green]{fill_char * filled}[/green][dim]{empty_char * empty}[/dim]"
+    return f"{fill_char * filled}{empty_char * empty}"
+
+
+def _method_icon(method: DownloadMethod) -> str:
+    if not _supports_unicode():
+        return "TOR" if method == DownloadMethod.TORRENT else "HTTP"
+    return "🧲" if method == DownloadMethod.TORRENT else "🌐"
 
 
 def print_banner() -> None:
@@ -62,7 +120,7 @@ def print_task_added(task: DownloadTask) -> None:
 
 def print_task_update(task: DownloadTask) -> None:
     """Print a one-line status update for a task."""
-    style, icon = _STATUS_STYLE.get(task.status, ("", "?"))
+    style, icon = _status_style(task.status)
 
     parts = [f"  {icon} [bold]#{task.id}[/bold]"]
 
@@ -78,8 +136,8 @@ def print_task_update(task: DownloadTask) -> None:
         pct = int(task.progress * 100)
         bar_filled = pct // 5
         bar_empty = 20 - bar_filled
-        bar = f"[green]{'█' * bar_filled}[/green][dim]{'░' * bar_empty}[/dim]"
-        method_icon = "🧲" if task.method == DownloadMethod.TORRENT else "🌐"
+        bar = _progress_bar(bar_filled, bar_empty, markup=True)
+        method_icon = _method_icon(task.method)
         parts.append(f"{bar} {pct}% ({task.downloaded}/{task.total}) {method_icon}")
 
     if task.error:
@@ -88,18 +146,36 @@ def print_task_update(task: DownloadTask) -> None:
     console.print(" ".join(parts))
 
 
-def build_status_table(tasks: list[DownloadTask]) -> Table:
+def build_status_table(
+    tasks: list[DownloadTask],
+    *,
+    max_rows: int | None = None,
+    compact: bool = False,
+) -> Table:
     """Build and return a Rich Table showing all task statuses."""
     table = Table(show_header=True, header_style="bold cyan", border_style="dim")
     table.add_column("#", style="bold", width=4)
-    table.add_column("Title", min_width=30, max_width=50)
-    table.add_column("Status", width=14)
-    table.add_column("Progress", width=24)
-    table.add_column("Method", width=8)
-    table.add_column("Info", max_width=30)
+    table.add_column(
+        "Title",
+        min_width=20 if compact else 30,
+        max_width=42 if compact else 50,
+        overflow="ellipsis",
+        no_wrap=compact,
+    )
+    table.add_column("Status", width=14, no_wrap=True)
+    table.add_column("Progress", width=24, no_wrap=True)
+    table.add_column("Method", width=8, no_wrap=True)
+    table.add_column("Info", max_width=30, overflow="ellipsis", no_wrap=compact)
 
-    for task in tasks:
-        style, icon = _STATUS_STYLE.get(task.status, ("", "?"))
+    hidden_count = 0
+    visible_tasks = tasks
+    if max_rows is not None and len(tasks) > max_rows:
+        visible_count = max(0, max_rows - 1)
+        visible_tasks = tasks[:visible_count]
+        hidden_count = len(tasks) - visible_count
+
+    for task in visible_tasks:
+        style, icon = _status_style(task.status)
 
         title = task.short_title
         status_text = f"{icon} {task.status.value}"
@@ -107,14 +183,15 @@ def build_status_table(tasks: list[DownloadTask]) -> Table:
         # Progress bar
         if task.total > 0:
             pct = int(task.progress * 100)
-            bar_filled = pct // 5
-            bar_empty = 20 - bar_filled
-            progress = f"{'█' * bar_filled}{'░' * bar_empty} {pct}%"
+            bar_width = 16 if compact else 20
+            bar_filled = min(bar_width, max(0, round(pct * bar_width / 100)))
+            bar_empty = bar_width - bar_filled
+            progress = f"{_progress_bar(bar_filled, bar_empty)} {pct}%"
         else:
-            progress = "—"
+            progress = "-" if compact or not _supports_unicode() else "—"
 
         method = task.method.value
-        info = task.error or f"{task.downloaded}/{task.total}" if task.total else ""
+        info = task.error or (f"{task.downloaded}/{task.total}" if task.total else "")
 
         table.add_row(
             str(task.id),
@@ -123,6 +200,16 @@ def build_status_table(tasks: list[DownloadTask]) -> Table:
             progress,
             method,
             info,
+        )
+
+    if hidden_count:
+        table.add_row(
+            "...",
+            f"[dim]{hidden_count} more task(s) hidden; enlarge terminal or use status[/dim]",
+            "",
+            "",
+            "",
+            "",
         )
 
     return table
@@ -147,23 +234,35 @@ def live_status_display(
         refresh_rate: Seconds between refreshes.
     """
     active_statuses = {"queued", "fetching_info", "checking_torrent", "downloading", "seeding"}
+    live_console = _make_live_console()
 
-    def _make_display() -> Table:
+    def _row_budget() -> int:
+        # Header, footer, table borders, and a little breathing room.
+        return max(1, live_console.size.height - 8)
+
+    def _make_display() -> Group:
         tasks = get_tasks()
         if not tasks:
             t = Table(show_header=False, border_style="dim")
             t.add_row("[dim]No tasks.[/dim]")
-            return t
-        return build_status_table(tasks)
+            table = t
+        else:
+            table = build_status_table(tasks, max_rows=_row_budget(), compact=True)
 
-    console.print("  [dim]Live status — press [bold]Ctrl+C[/bold] to return[/dim]\n")
+        return Group(
+            Text.from_markup("Live status  [bold]Ctrl+C[/bold] to return"),
+            table,
+            Text.from_markup("[dim]Large lists are clipped to the current window height.[/dim]"),
+        )
 
     try:
         with Live(
             _make_display(),
-            console=console,
+            console=live_console,
             refresh_per_second=4,
-            transient=False,
+            screen=True,
+            transient=True,
+            redirect_stderr=False,
             vertical_overflow="ellipsis",
         ) as live:
             while True:
@@ -177,7 +276,7 @@ def live_status_display(
                     break
     except KeyboardInterrupt:
         pass
-    console.print("  [dim]Exited live status.[/dim]")
+    live_console.print("  [dim]Exited live status.[/dim]")
 
 
 def print_help() -> None:

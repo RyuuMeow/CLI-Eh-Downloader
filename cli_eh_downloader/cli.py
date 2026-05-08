@@ -9,23 +9,33 @@ from .config import load_config
 from .shell import Shell
 
 
+class _PromptSafeStreamHandler(logging.StreamHandler):
+    """Write through the current stdout so prompt-toolkit can redraw input."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        self.stream = sys.stdout
+        super().emit(record)
+
+
 def _setup_logging(verbose: bool = False) -> None:
     """Configure logging."""
     level = logging.DEBUG if verbose else logging.WARNING
 
-    handler = logging.StreamHandler(sys.stderr)
+    handler = _PromptSafeStreamHandler()
     handler.setLevel(level)
     handler.setFormatter(logging.Formatter("[%(levelname)s] %(message)s"))
 
     logging.basicConfig(
         level=level,
         handlers=[handler],
+        force=True,
     )
     # Quiet down noisy libraries
     logging.getLogger("httpx").setLevel(logging.WARNING)
     logging.getLogger("httpcore").setLevel(logging.WARNING)
     logging.getLogger("hpack").setLevel(logging.WARNING)
     logging.getLogger("h2").setLevel(logging.WARNING)
+    logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
 def main() -> None:
@@ -56,9 +66,8 @@ def main() -> None:
             urls.append(args[i])
             i += 1
 
-    _setup_logging(verbose)
-
     config = load_config(config_path)
+    _setup_logging(verbose or config.debug_mode)
     shell = Shell(config)
 
     if urls:

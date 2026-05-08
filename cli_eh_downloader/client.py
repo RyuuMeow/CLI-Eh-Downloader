@@ -114,13 +114,23 @@ class EHClient:
 
         raise RuntimeError(f"Failed to POST {url} after {self.config.retry_count} attempts")
 
-    async def download_file(self, url: str, dest: str, *, referer: str | None = None) -> int:
+    async def download_file(
+        self,
+        url: str,
+        dest: str,
+        *,
+        referer: str | None = None,
+        max_attempts: int | None = None,
+        quiet: bool = False,
+    ) -> int:
         """Download a file to disk. Returns bytes written.
 
         Args:
             url: Direct URL to the file.
             dest: Local path to save the file.
             referer: Optional Referer header (some CDN servers require this).
+            max_attempts: Override the configured retry count for this transfer.
+            quiet: Log transfer failures at debug level so callers can summarize them.
         """
         client = await self._ensure_client()
 
@@ -128,7 +138,9 @@ class EHClient:
         if referer:
             headers["Referer"] = referer
 
-        for attempt in range(self.config.retry_count):
+        attempts = max(1, max_attempts if max_attempts is not None else self.config.retry_count)
+
+        for attempt in range(attempts):
             try:
                 async with client.stream("GET", url, headers=headers) as response:
                     response.raise_for_status()
@@ -142,16 +154,21 @@ class EHClient:
                     return total
 
             except (httpx.TimeoutException, httpx.HTTPStatusError, httpx.StreamError) as e:
-                log.warning(
+                status_code = _http_status_code(e)
+                retryable = status_code is None or status_code in {408, 409, 425, 429, 500, 502, 503, 504}
+                final_attempt = attempt == attempts - 1 or not retryable
+
+                log_fn = log.debug if quiet or not final_attempt else log.warning
+                log_fn(
                     "Download %s attempt %d/%d failed: %s",
-                    url[:80], attempt + 1, self.config.retry_count, e,
+                    url[:80], attempt + 1, attempts, e,
                 )
                 # Remove partial file
                 p = Path(dest)
                 if p.exists():
                     p.unlink(missing_ok=True)
 
-                if attempt == self.config.retry_count - 1:
+                if final_attempt:
                     raise
                 await asyncio.sleep(self.config.retry_delay)
 
@@ -164,3 +181,9 @@ class EHClient:
     async def close(self) -> None:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
+
+
+def _http_status_code(exc: BaseException) -> int | None:
+    if isinstance(exc, httpx.HTTPStatusError):
+        return exc.response.status_code
+    return None

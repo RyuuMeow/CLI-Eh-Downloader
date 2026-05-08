@@ -9,6 +9,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+import httpx
+
 from .client import EHClient
 from .config import Config
 from .models import (
@@ -224,26 +226,18 @@ async def process_task(
         output_path = Path(task.output_dir)
         existing_files = {f.name for f in output_path.iterdir() if f.is_file()} if output_path.exists() else set()
 
-        # --- Phase A: Resolve image URLs sequentially (respects rate limit) ---
-        for img in images:
-            if task.status in (TaskStatus.CANCELLED, TaskStatus.PAUSED):
-                break
-            try:
-                await fetch_image_url(client, img)
-                log.debug("Resolved image %d: %s -> %s", img.index, img.filename, img.image_url)
-            except Exception as e:
-                log.warning("Failed to resolve image %d URL: %s", img.index, e)
-                # Keep going — we'll skip this image in the download phase
+        # Resolve each H@H image URL immediately before downloading it. Those URLs
+        # carry a short-lived keystamp, so resolving the whole gallery up front can
+        # leave later downloads with stale URLs and noisy 403 failures.
 
-        # --- Phase B: Download resolved images with concurrency ---
         semaphore = asyncio.Semaphore(config.max_parallel)
+        failure_reasons: dict[str, int] = {}
+
+        def _record_failure(reason: str) -> None:
+            failure_reasons[reason] = failure_reasons.get(reason, 0) + 1
 
         async def _download_one(img: GalleryImage) -> bool:
             if task.status in (TaskStatus.CANCELLED, TaskStatus.PAUSED):
-                return False
-
-            if not img.image_url:
-                log.warning("Skipping image %d: no URL resolved", img.index)
                 return False
 
             # Skip if already downloaded
@@ -257,20 +251,62 @@ async def process_task(
                 if task.status in (TaskStatus.CANCELLED, TaskStatus.PAUSED):
                     return False
 
-                try:
-                    dest = str(output_path / (img.filename or f"{img.index:04d}.jpg"))
-                    # Pass the image page URL as Referer — hath network servers require it
-                    await client.download_file(
-                        img.image_url, dest, referer=img.page_url
-                    )
+                last_error: Exception | None = None
+                attempts = max(1, config.retry_count)
+                for attempt in range(attempts):
+                    try:
+                        if not img.image_url:
+                            await fetch_image_url(client, img)
+                            log.debug("Resolved image %d: %s -> %s", img.index, img.filename, img.image_url)
 
-                    task.downloaded += 1
-                    task.progress = task.downloaded / task.total if task.total else 0
-                    _notify(on_update, task)
-                    return True
-                except Exception as e:
-                    log.error("Failed to download image %d (%s): %s", img.index, img.filename, e)
-                    return False
+                        if not img.image_url:
+                            raise RuntimeError("no direct image URL resolved")
+
+                        if img.filename and img.filename in existing_files:
+                            task.downloaded += 1
+                            task.progress = task.downloaded / task.total if task.total else 0
+                            _notify(on_update, task)
+                            return True
+
+                        dest = str(output_path / (img.filename or f"{img.index:04d}.jpg"))
+                        # Pass the image page URL as Referer; H@H servers require it.
+                        await client.download_file(
+                            img.image_url,
+                            dest,
+                            referer=img.page_url,
+                            max_attempts=1,
+                            quiet=True,
+                        )
+
+                        task.downloaded += 1
+                        task.progress = task.downloaded / task.total if task.total else 0
+                        _notify(on_update, task)
+                        return True
+                    except httpx.HTTPStatusError as e:
+                        last_error = e
+                        status_code = e.response.status_code
+                        if status_code == 403 and attempt < attempts - 1:
+                            img.image_url = None
+                            await asyncio.sleep(config.retry_delay)
+                            continue
+                        _record_failure(f"HTTP {status_code}")
+                        break
+                    except Exception as e:
+                        last_error = e
+                        if attempt < attempts - 1:
+                            await asyncio.sleep(config.retry_delay)
+                            continue
+                        _record_failure(type(e).__name__)
+
+                if config.debug_mode and last_error:
+                    log.debug(
+                        "Failed to download image %d (%s): %s",
+                        img.index,
+                        img.filename,
+                        last_error,
+                        exc_info=True,
+                    )
+                return False
 
         results = await asyncio.gather(*[_download_one(img) for img in images])
 
@@ -283,10 +319,10 @@ async def process_task(
             task.progress = 1.0
         elif task.downloaded > 0:
             task.status = TaskStatus.COMPLETED
-            task.error = f"{failed_count} images failed"
+            task.error = _format_download_failures(failed_count, failure_reasons, config.debug_mode)
         else:
             task.status = TaskStatus.FAILED
-            task.error = "All downloads failed"
+            task.error = _format_download_failures(failed_count, failure_reasons, config.debug_mode, all_failed=True)
 
         _save_metadata(task, config)
         _notify(on_update, task)
@@ -392,6 +428,24 @@ def _open_torrent_external(torrent_path: str, download_dir: str) -> str:
 def _set_fast_queue_notice(task: DownloadTask, message: str) -> None:
     if task.fast_queue:
         task.notice = message
+
+
+def _format_download_failures(
+    failed_count: int,
+    failure_reasons: dict[str, int],
+    debug_mode: bool,
+    *,
+    all_failed: bool = False,
+) -> str:
+    prefix = "All downloads failed" if all_failed else f"{failed_count} images failed"
+    if failure_reasons:
+        details = ", ".join(
+            f"{reason}: {count}" for reason, count in sorted(failure_reasons.items())
+        )
+        prefix = f"{prefix} ({details})"
+    if not debug_mode:
+        prefix = f"{prefix}; enable debug_mode for per-image details"
+    return prefix
 
 
 def _notify(callback: ProgressCallback, task: DownloadTask) -> None:
