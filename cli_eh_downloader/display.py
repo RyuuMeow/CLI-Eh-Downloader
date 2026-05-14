@@ -110,7 +110,7 @@ def print_banner() -> None:
 
     console.print("  ready to go.")
     console.print("  — paste a url to start")
-    console.print("  — or type [cyan]search <keyword>[/cyan] to find something")
+    console.print("  — or type a keyword to search")
     console.print()
 
 
@@ -287,6 +287,7 @@ def print_help() -> None:
                 ("add <url>", "Add a gallery download task"),
                 ("<url>", "Paste a gallery URL directly to add"),
                 ("<listing url>", "Paste a tag/uploader/category URL for bulk download"),
+                ("<keyword>", "Search galleries when auto-detect is enabled"),
                 ("search <keyword>", "Search galleries; bulk mode is toggled in results"),
             ],
         ),

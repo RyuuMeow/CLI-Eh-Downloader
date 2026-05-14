@@ -44,6 +44,8 @@ open_gallery_website_onclick = false
 download_gallery_onclick = false
 # Skip the per-result action menu when clicking a search result (single mode only)
 no_sub_menu = false
+# Treat non-command, non-link input as a search keyword
+auto_detect_search_keyword = true
 
 [sorting]
 # Gallery folder sorting: auto, artist, keyword, off

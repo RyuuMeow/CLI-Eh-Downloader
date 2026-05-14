@@ -45,6 +45,7 @@ class Config:
     search_open_gallery_website_onclick: bool = False
     search_download_gallery_onclick: bool = False
     search_no_sub_menu: bool = False
+    search_auto_detect_search_keyword: bool = True
 
     # Sorting settings
     auto_sort: str = "off"  # auto, artist, keyword, off
@@ -121,6 +122,7 @@ class Config:
             f"open_gallery_website_onclick = {'true' if self.search_open_gallery_website_onclick else 'false'}\n",
             f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
             f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
+            f"auto_detect_search_keyword = {'true' if self.search_auto_detect_search_keyword else 'false'}\n",
             "\n[sorting]\n",
             f"auto_sort = {_toml_string(_normalize_auto_sort(self.auto_sort))}\n",
             f"sort_by_keyword_keywords = {_toml_string(self.sort_by_keyword_keywords)}\n",
@@ -192,6 +194,7 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
             "open_gallery_website_onclick",
             "download_gallery_onclick",
             "no_sub_menu",
+            "auto_detect_search_keyword",
         ),
         "sorting": (
             "auto_sort",
@@ -271,6 +274,8 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.search_download_gallery_onclick = bool(search["download_gallery_onclick"])
     if "no_sub_menu" in search:
         config.search_no_sub_menu = bool(search["no_sub_menu"])
+    if "auto_detect_search_keyword" in search:
+        config.search_auto_detect_search_keyword = bool(search["auto_detect_search_keyword"])
 
     sorting = data.get("sorting", {})
     if "auto_sort" in sorting:

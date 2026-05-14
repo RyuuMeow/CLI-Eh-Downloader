@@ -133,7 +133,23 @@ class Shell:
                 raise EOFError()
 
             case _:
+                if self.config.search_auto_detect_search_keyword and not self._looks_like_link(line):
+                    self._cmd_search(line)
+                    return
                 print_error(f"Unknown command: {cmd}  (type [bold]help[/bold] for commands)")
+
+    @staticmethod
+    def _looks_like_link(line: str) -> bool:
+        text = line.strip().lower()
+        if not text:
+            return False
+        return (
+            "://" in text
+            or text.startswith("www.")
+            or text.startswith("magnet:")
+            or text.startswith("e-hentai.org/")
+            or text.startswith("exhentai.org/")
+        )
 
     # ------------------------------------------------------------------
     # Add command
@@ -2311,6 +2327,7 @@ class Shell:
             "search_open_gallery_website_onclick",
             "search_download_gallery_onclick",
             "search_no_sub_menu",
+            "search_auto_detect_search_keyword",
             "anti_ai",
         }
         mode_labels = {
@@ -2362,6 +2379,7 @@ class Shell:
                     ("search_open_gallery_website_onclick", "Open Gallery Website Onclick"),
                     ("search_download_gallery_onclick", "Download Gallery Onclick"),
                     ("search_no_sub_menu", "No Sub-Menu"),
+                    ("search_auto_detect_search_keyword", "Auto Detect Search Keyword"),
                 ],
             ),
             (
@@ -2574,6 +2592,7 @@ class Shell:
             ("Search", "open_gallery_website_onclick", str(c.search_open_gallery_website_onclick)),
             ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
             ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
+            ("Search", "auto_detect_search_keyword", str(c.search_auto_detect_search_keyword)),
             ("Sorting", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
             ("Sorting", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
             ("Sorting", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
@@ -2631,6 +2650,8 @@ class Shell:
             "search_download_gallery_onclick": "search_download_gallery_onclick",
             "no_sub_menu": "search_no_sub_menu",
             "search_no_sub_menu": "search_no_sub_menu",
+            "auto_detect_search_keyword": "search_auto_detect_search_keyword",
+            "search_auto_detect_search_keyword": "search_auto_detect_search_keyword",
             "auto_sort": "auto_sort",
             "sort": "auto_sort",
             "sorting": "auto_sort",
@@ -2679,6 +2700,7 @@ class Shell:
             "search_open_gallery_website_onclick",
             "search_download_gallery_onclick",
             "search_no_sub_menu",
+            "search_auto_detect_search_keyword",
             "anti_ai",
         ):
             setattr(self.config, attr, value.lower() in ("true", "1", "yes", "on", "enabled"))
