@@ -12,6 +12,11 @@ GALLERY_URL_PATTERN = re.compile(
     r"https?://(?P<site>e-hentai|exhentai)\.org/g/(?P<gid>\d+)/(?P<token>[a-f0-9]+)/?"
 )
 
+# URL pattern: https://e-hentai.org/s/{page_token}/{gid}-{page}
+IMAGE_PAGE_URL_PATTERN = re.compile(
+    r"https?://(?P<site>e-hentai|exhentai)\.org/s/(?P<page_token>[A-Za-z0-9]+)/(?P<gid>\d+)-(?P<page>\d+)/?"
+)
+
 # URL pattern for listing pages: tags, categories, uploaders, search, favorites, etc.
 # Matches any e-hentai/exhentai URL that is NOT a single gallery page.
 PAGE_URL_PATTERN = re.compile(

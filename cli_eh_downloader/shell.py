@@ -26,7 +26,7 @@ from .display import (
 from .models import BulkDownloadConfig, BulkDownloadMode, DownloadMethod, DownloadTask, FetchMode, SearchResult, TaskStatus
 from .sorting import gallery_filter_reason, resolve_sorted_download_dir, search_result_filter_reason
 from .task_manager import TaskManager
-from .utils import GALLERY_URL_PATTERN, format_size, is_listing_url, matches_keyword_filter
+from .utils import GALLERY_URL_PATTERN, IMAGE_PAGE_URL_PATTERN, format_size, is_listing_url, matches_keyword_filter
 
 
 class Shell:
@@ -69,6 +69,10 @@ class Shell:
 
     def _dispatch(self, line: str) -> None:
         if GALLERY_URL_PATTERN.match(line):
+            self._cmd_add(line)
+            return
+
+        if IMAGE_PAGE_URL_PATTERN.match(line):
             self._cmd_add(line)
             return
 
@@ -158,6 +162,9 @@ class Shell:
     def _cmd_add(self, url: str) -> None:
         parsed = GALLERY_URL_PATTERN.match(url)
         if not parsed:
+            if IMAGE_PAGE_URL_PATTERN.match(url):
+                self._cmd_add_image_page(url)
+                return
             print_error("Invalid gallery URL.")
             return
 
@@ -175,6 +182,17 @@ class Shell:
         console.print(f"  [bold]{title}[/bold]")
 
         self._default_download(url, gallery, torrents)
+
+    def _cmd_add_image_page(self, url: str) -> None:
+        console.print("  [cyan]Resolving image page to gallery...[/cyan]")
+        try:
+            gallery_url = self.manager.resolve_gallery_url_sync(url)
+        except Exception as e:
+            print_error(f"Failed to resolve image page: {e}")
+            return
+
+        print_info(f"Resolved gallery URL: {gallery_url}")
+        self._cmd_add(gallery_url)
 
     def _fast_queue_enabled(self, mode: str | None = None) -> bool:
         mode = mode or self.config.default_download_mode

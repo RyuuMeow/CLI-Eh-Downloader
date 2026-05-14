@@ -5,12 +5,13 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
 from .client import EHClient
 from .models import GalleryImage, GalleryInfo, SearchPage, SearchResult, SiteType, TorrentInfo
-from .utils import build_torrent_page_url, get_base_url, parse_gallery_url
+from .utils import IMAGE_PAGE_URL_PATTERN, build_gallery_url, build_torrent_page_url, get_base_url, parse_gallery_url
 
 log = logging.getLogger(__name__)
 
@@ -189,6 +190,37 @@ async def fetch_image_url(client: EHClient, image: GalleryImage) -> GalleryImage
         image.filename = f"{image.index:04d}.jpg"
 
     return image
+
+
+async def resolve_gallery_url_from_image_page(client: EHClient, image_page_url: str) -> str:
+    """Resolve an E-Hentai/ExHentai image page URL back to its gallery URL."""
+    image_page_url = image_page_url.strip()
+    if not IMAGE_PAGE_URL_PATTERN.match(image_page_url):
+        raise ValueError("Invalid image page URL")
+
+    response = await client.get(image_page_url)
+    soup = BeautifulSoup(response.text, "lxml")
+
+    gallery_links: list[str] = []
+    for link in soup.select("a[href]"):
+        href = urljoin(str(response.url), link["href"])
+        parsed = parse_gallery_url(href)
+        if not parsed:
+            continue
+
+        link_text = link.get_text(" ", strip=True).lower()
+        if "back to gallery" in link_text:
+            gid, token, site = parsed
+            return build_gallery_url(gid, token, site)
+        gallery_links.append(href)
+
+    for href in gallery_links:
+        parsed = parse_gallery_url(href)
+        if parsed:
+            gid, token, site = parsed
+            return build_gallery_url(gid, token, site)
+
+    raise ValueError("Could not find gallery URL from image page")
 
 
 async def fetch_torrent_list(client: EHClient, gallery: GalleryInfo) -> list[TorrentInfo]:

@@ -97,6 +97,18 @@ class TaskManager:
         client = self._ensure_client()
         return await fetch_listing_page(client, url, page=page, url_override=url_override)
 
+    def resolve_gallery_url_sync(self, image_page_url: str) -> str:
+        """Synchronously resolve an image page URL back to its gallery URL."""
+        future = asyncio.run_coroutine_threadsafe(
+            self._resolve_gallery_url_async(image_page_url), self._loop
+        )
+        return future.result()
+
+    async def _resolve_gallery_url_async(self, image_page_url: str) -> str:
+        from .parser import resolve_gallery_url_from_image_page
+        client = self._ensure_client()
+        return await resolve_gallery_url_from_image_page(client, image_page_url)
+
     def add_task(
         self,
         url: str,

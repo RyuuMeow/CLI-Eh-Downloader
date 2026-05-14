@@ -286,6 +286,7 @@ def print_help() -> None:
             [
                 ("add <url>", "Add a gallery download task"),
                 ("<url>", "Paste a gallery URL directly to add"),
+                ("<image page url>", "Resolve a gallery image page back to its gallery"),
                 ("<listing url>", "Paste a tag/uploader/category URL for bulk download"),
                 ("<keyword>", "Search galleries when auto-detect is enabled"),
                 ("search <keyword>", "Search galleries; bulk mode is toggled in results"),
