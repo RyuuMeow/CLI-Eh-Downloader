@@ -21,10 +21,16 @@ from .models import (
     SiteType,
     TaskStatus,
 )
-from .parser import fetch_gallery_info, fetch_image_list, fetch_image_url, fetch_torrent_list
+from .parser import (
+    fetch_gallery_info,
+    fetch_image_list,
+    fetch_image_url,
+    fetch_torrent_list,
+    resolve_gallery_url_from_image_page,
+)
 from .sorting import gallery_filter_reason, resolve_sorted_download_dir
 from .torrent import HAS_LIBTORRENT, download_torrent_file, download_via_torrent
-from .utils import ensure_dir, parse_gallery_url, sanitize_filename
+from .utils import IMAGE_PAGE_URL_PATTERN, ensure_dir, parse_gallery_url, sanitize_filename
 
 log = logging.getLogger(__name__)
 
@@ -56,6 +62,13 @@ async def process_task(
     try:
         # --- Step 1: Parse URL ---
         parsed = parse_gallery_url(task.url)
+        if not parsed and IMAGE_PAGE_URL_PATTERN.match(task.url):
+            task.status = TaskStatus.FETCHING_INFO
+            _notify(on_update, task)
+            gallery_url = await resolve_gallery_url_from_image_page(client, task.url)
+            task.url = gallery_url
+            parsed = parse_gallery_url(gallery_url)
+
         if not parsed:
             task.status = TaskStatus.FAILED
             task.error = "Invalid gallery URL"

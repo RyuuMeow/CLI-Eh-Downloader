@@ -163,6 +163,8 @@ class Shell:
         parsed = GALLERY_URL_PATTERN.match(url)
         if not parsed:
             if IMAGE_PAGE_URL_PATTERN.match(url):
+                if self._queue_fast_download(url):
+                    return
                 self._cmd_add_image_page(url)
                 return
             print_error("Invalid gallery URL.")
