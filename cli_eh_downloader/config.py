@@ -25,9 +25,12 @@ class Config:
     rate_limit_delay: float = 1.5
     retry_count: int = 3
     retry_delay: float = 5.0
-    prefer_torrent: bool = True
     default_download_mode: str = "auto"  # auto, ask, direct
     fast_queue: bool = True
+
+    # Torrent external client settings
+    torrent_client_exe_path: str = ""
+    torrent_command_template: str = ""
 
     # Cookie settings (for ExHentai)
     ipb_member_id: str = ""
@@ -105,9 +108,11 @@ class Config:
             f"rate_limit_delay = {self.rate_limit_delay}\n",
             f"retry_count = {self.retry_count}\n",
             f"retry_delay = {self.retry_delay}\n",
-            f"prefer_torrent = {'true' if self.prefer_torrent else 'false'}\n",
             f"default_download_mode = {_toml_string(_normalize_download_mode(self.default_download_mode))}\n",
             f"fast_queue = {'true' if self.fast_queue else 'false'}\n",
+            "\n[torrent]\n",
+            f"client_exe_path = {_toml_string(self.torrent_client_exe_path)}\n",
+            f"command_template = {_toml_string(self.torrent_command_template)}\n",
             "\n[cookies]\n",
             f"ipb_member_id = {_toml_string(self.ipb_member_id)}\n",
             f"ipb_pass_hash = {_toml_string(self.ipb_pass_hash)}\n",
@@ -182,11 +187,11 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
             "rate_limit_delay",
             "retry_count",
             "retry_delay",
-            "prefer_torrent",
             "default_download_mode",
             "fast_queue",
         ),
         "cookies": ("ipb_member_id", "ipb_pass_hash", "igneous", "sk"),
+        "torrent": ("client_exe_path", "command_template"),
         "display": ("show_japanese_title", "debug_mode"),
         "search": (
             "bulk_mode_default",
@@ -238,14 +243,18 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.retry_count = int(dl["retry_count"])
     if "retry_delay" in dl:
         config.retry_delay = float(dl["retry_delay"])
-    if "prefer_torrent" in dl:
-        config.prefer_torrent = bool(dl["prefer_torrent"])
     if "default_download_mode" in dl:
         config.default_download_mode = _normalize_download_mode(str(dl["default_download_mode"]))
     elif "auto_select_best" in dl:
         config.default_download_mode = "auto" if bool(dl["auto_select_best"]) else "ask"
     if "fast_queue" in dl:
         config.fast_queue = bool(dl["fast_queue"])
+
+    torrent = data.get("torrent", {})
+    if "client_exe_path" in torrent:
+        config.torrent_client_exe_path = str(torrent["client_exe_path"])
+    if "command_template" in torrent:
+        config.torrent_command_template = str(torrent["command_template"])
 
     cookies = data.get("cookies", {})
     if "ipb_member_id" in cookies:

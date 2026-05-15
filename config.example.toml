@@ -12,12 +12,18 @@ rate_limit_delay = 1.5
 retry_count = 3
 # Delay between retries (seconds)
 retry_delay = 5.0
-# Prefer torrent download when available
-prefer_torrent = true
 # Default download mode: auto, ask, direct
 default_download_mode = "auto"
 # Queue auto/direct downloads immediately and fetch gallery info in the background
 fast_queue = true
+
+[torrent]
+# External torrent client executable path. Empty = auto-detect qBittorrent or the
+# Windows default .torrent client, then save the detected value back to config.
+client_exe_path = ""
+# Placeholders: {exe}, {download_dir}, {torrent_path}. Empty = auto-template.
+# qBittorrent example: "\"{exe}\" --save-path=\"{download_dir}\" \"{torrent_path}\""
+command_template = ""
 
 [cookies]
 # Required for ExHentai access. Get these from your browser cookies.

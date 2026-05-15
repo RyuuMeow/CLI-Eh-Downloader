@@ -227,13 +227,25 @@ class Shell:
     def _auto_download(self, url, gallery, torrents, download_dir: str | None = None, max_size_mb: float = 0.0) -> bool:
         """Auto-select best method and start download without prompts. Returns True."""
         from .torrent import HAS_LIBTORRENT
+        from .torrent_client import ensure_torrent_client_settings
 
         # Filter out 0-seed torrents — they are dead and not useful
         viable_torrents = [t for t in torrents if t.seeds > 0]
-        if viable_torrents and self.config.prefer_torrent:
+        if viable_torrents:
             best = viable_torrents[0]  # sorted by seeds
 
-            if HAS_LIBTORRENT:
+            if ensure_torrent_client_settings(self.config):
+                # Torrent-only: save .torrent, open with client, record in history. Done.
+                sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
+                torrent_path = self._save_and_open_torrent(best, sorted_dir)
+                if torrent_path:
+                    from .downloader import save_torrent_metadata
+                    save_torrent_metadata(gallery, torrent_path, self.config)
+                    print_success("Torrent saved & opened. Download via torrent client.")
+                else:
+                    # Fallback to direct if torrent save/open failed
+                    self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
+            elif HAS_LIBTORRENT:
                 console.print(f"  [green]Using torrent[/green] (Seeds: {best.seeds})")
                 task = self.manager.add_task(
                     url,
@@ -246,16 +258,7 @@ class Shell:
                 )
                 print_task_added(task)
             else:
-                # Torrent-only: save .torrent, open with client, record in history. Done.
-                sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
-                torrent_path = self._save_and_open_torrent(best, sorted_dir)
-                if torrent_path:
-                    from .downloader import save_torrent_metadata
-                    save_torrent_metadata(gallery, torrent_path, self.config)
-                    print_success("Torrent saved & opened. Download via torrent client.")
-                else:
-                    # Fallback to direct if torrent save failed
-                    self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
+                self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
             return True
 
         # No viable torrent (all 0 seeds or none available) → direct download
@@ -289,8 +292,10 @@ class Shell:
         """Show interactive selector for download method."""
         import questionary
         from .torrent import HAS_LIBTORRENT
+        from .torrent_client import ensure_torrent_client_settings
 
         size_str = format_size(int(gallery.filesize)) if gallery.filesize.isdigit() else gallery.filesize
+        has_external_client = ensure_torrent_client_settings(self.config)
 
         # Build options list: index 0 = direct, 1..N = torrents, -1 = cancel
         options = [{"method": DownloadMethod.DIRECT}]
@@ -302,7 +307,11 @@ class Shell:
         ]
 
         for i, t in enumerate(torrents):
-            label = "Torrent" if HAS_LIBTORRENT else "Torrent \u2192 open client"
+            label = (
+                "Torrent"
+                if HAS_LIBTORRENT and not has_external_client
+                else "Torrent \u2192 open client"
+            )
             choices.append(questionary.Choice(
                 title=f"{label}  |  {t.size}  |  Seeds: {t.seeds}  |  Peers: {t.peers}  |  {t.name}",
                 value=i + 1,
@@ -329,7 +338,11 @@ class Shell:
         torrent_info = choice.get("torrent")
 
         # Torrent without libtorrent: save .torrent, record in history, done.
-        if method == DownloadMethod.TORRENT and not HAS_LIBTORRENT and torrent_info:
+        if (
+            method == DownloadMethod.TORRENT
+            and torrent_info
+            and (has_external_client or not HAS_LIBTORRENT)
+        ):
             sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
             torrent_path = self._save_and_open_torrent(torrent_info, sorted_dir)
             if torrent_path:
@@ -360,25 +373,18 @@ class Shell:
             torrent_path = future.result(timeout=30)
             print_success(f"Saved: {torrent_path}")
 
-            # Try to open with system torrent client
-            import shutil
-            import subprocess
-
-            # Try qBittorrent first (supports --save-path)
             gallery_dir = str(
                 __import__("pathlib").Path(download_dir or self.config.download_dir).resolve()
             )
-            qbt = shutil.which("qbittorrent")
-            if qbt:
-                subprocess.Popen([qbt, f"--save-path={gallery_dir}", torrent_path])
-                print_success("Opened with qBittorrent.")
+            from .torrent_client import is_torrent_client_open_success, open_torrent_external
+
+            message = open_torrent_external(torrent_path, gallery_dir, self.config)
+            if is_torrent_client_open_success(message):
+                print_success(message)
+                return torrent_path
             else:
-                try:
-                    os.startfile(torrent_path)
-                    print_info("Opened with default torrent client.")
-                except OSError:
-                    print_info(f"No torrent client found. File: {torrent_path}")
-            return torrent_path
+                print_info(message)
+                return None
 
         except Exception as e:
             print_error(f"Failed to save .torrent: {e}")
@@ -2338,7 +2344,6 @@ class Shell:
 
         _BACK = "__BACK__"
         bool_keys = {
-            "prefer_torrent",
             "fast_queue",
             "show_japanese_title",
             "debug_mode",
@@ -2375,11 +2380,17 @@ class Shell:
                     ("download_dir", "Download Directory"),
                     ("default_download_mode", "Default Download Mode"),
                     ("fast_queue", "Fast Queue"),
-                    ("prefer_torrent", "Prefer Torrent"),
                     ("max_parallel", "Max Parallel Downloads"),
                     ("rate_limit_delay", "Rate Limit Delay (seconds)"),
                     ("retry_count", "Retry Count"),
                     ("retry_delay", "Retry Delay (seconds)"),
+                ],
+            ),
+            (
+                "Torrent",
+                [
+                    ("torrent_client_exe_path", "Client EXE Path"),
+                    ("torrent_command_template", "Command Template"),
                 ],
             ),
             (
@@ -2597,11 +2608,12 @@ class Shell:
             ("Download", "download_dir", c.download_dir),
             ("Download", "default_download_mode", mode_labels.get(c.default_download_mode, "Auto")),
             ("Download", "fast_queue", str(c.fast_queue)),
-            ("Download", "prefer_torrent", str(c.prefer_torrent)),
             ("Download", "max_parallel", str(c.max_parallel)),
             ("Download", "rate_limit_delay", f"{c.rate_limit_delay}s"),
             ("Download", "retry_count", str(c.retry_count)),
             ("Download", "retry_delay", f"{c.retry_delay}s"),
+            ("Torrent", "client_exe_path", c.torrent_client_exe_path or "[dim]auto detect[/dim]"),
+            ("Torrent", "command_template", c.torrent_command_template or "[dim]auto[/dim]"),
             ("Cookie", "ipb_member_id", c.ipb_member_id or "[dim]not set[/dim]"),
             ("Cookie", "ipb_pass_hash", ("***" + c.ipb_pass_hash[-4:]) if c.ipb_pass_hash else "[dim]not set[/dim]"),
             ("Cookie", "igneous", ("***" + c.igneous[-4:]) if c.igneous else "[dim]not set[/dim]"),
@@ -2645,8 +2657,12 @@ class Shell:
             "rate_limit_delay": "rate_limit_delay",
             "retry_count": "retry_count",
             "retry_delay": "retry_delay",
-            "prefer_torrent": "prefer_torrent",
             "fast_queue": "fast_queue",
+            "torrent_client_exe_path": "torrent_client_exe_path",
+            "client_exe_path": "torrent_client_exe_path",
+            "torrent_client": "torrent_client_exe_path",
+            "torrent_command_template": "torrent_command_template",
+            "command_template": "torrent_command_template",
             "default_download_mode": "default_download_mode",
             "download_mode": "default_download_mode",
             "mode": "default_download_mode",
@@ -2711,7 +2727,6 @@ class Shell:
         elif attr == "auto_select_best":
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
         elif attr in (
-            "prefer_torrent",
             "fast_queue",
             "show_japanese_title",
             "debug_mode",

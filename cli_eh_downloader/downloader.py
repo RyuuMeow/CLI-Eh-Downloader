@@ -30,6 +30,11 @@ from .parser import (
 )
 from .sorting import gallery_filter_reason, resolve_sorted_download_dir
 from .torrent import HAS_LIBTORRENT, download_torrent_file, download_via_torrent
+from .torrent_client import (
+    ensure_torrent_client_settings,
+    is_torrent_client_open_success,
+    open_torrent_external,
+)
 from .utils import IMAGE_PAGE_URL_PATTERN, ensure_dir, parse_gallery_url, sanitize_filename
 
 log = logging.getLogger(__name__)
@@ -125,14 +130,11 @@ async def process_task(
         direct_reason: str | None = None
         method_to_use = task.force_method
         if not method_to_use:
-            if config.prefer_torrent and gallery.torrent_count > 0:
+            if gallery.torrent_count > 0:
                 method_to_use = DownloadMethod.TORRENT
             else:
                 method_to_use = DownloadMethod.DIRECT
-                if not config.prefer_torrent:
-                    direct_reason = "Prefer Torrent is disabled"
-                else:
-                    direct_reason = "this gallery has no listed torrents"
+                direct_reason = "this gallery has no listed torrents"
         elif method_to_use == DownloadMethod.DIRECT:
             direct_reason = "Download Mode is Direct Download"
 
@@ -160,13 +162,36 @@ async def process_task(
                     log.warning("Failed to download .torrent file: %s", e)
                     torrent_path = None
 
-                if torrent_path and HAS_LIBTORRENT and best_torrent.seeds > 0:
+                use_external_client = ensure_torrent_client_settings(config)
+                if torrent_path and use_external_client:
+                    external_msg = open_torrent_external(
+                        torrent_path,
+                        download_dir,
+                        config,
+                    )
+                    if is_torrent_client_open_success(external_msg):
+                        task.method = DownloadMethod.TORRENT
+                        task.status = TaskStatus.COMPLETED
+                        task.progress = 1.0
+                        task.downloaded = task.total
+                        _set_fast_queue_notice(
+                            task,
+                            (
+                                f"Task #{task.id}: using torrent via external client "
+                                f"({best_torrent.seeds} seed(s)). {external_msg}"
+                            ),
+                        )
+                        _save_torrent_task_metadata(task, config)
+                        _notify(on_update, task)
+                        return
+                    direct_reason = external_msg
+                elif torrent_path and HAS_LIBTORRENT and best_torrent.seeds > 0:
                     task.method = DownloadMethod.TORRENT
                     task.status = TaskStatus.DOWNLOADING
                     ensure_dir(task.output_dir)
                     _set_fast_queue_notice(
                         task,
-                        f"Task #{task.id}: using torrent ({best_torrent.seeds} seed(s); Prefer Torrent enabled).",
+                        f"Task #{task.id}: using torrent ({best_torrent.seeds} seed(s); Auto mode selected torrent).",
                     )
                     _notify(on_update, task)
 
@@ -188,25 +213,6 @@ async def process_task(
                     else:
                         log.warning("Torrent download failed/timed out. Falling back to direct download.")
                         direct_reason = "torrent download failed or timed out"
-                elif torrent_path and not HAS_LIBTORRENT:
-                    task.method = DownloadMethod.TORRENT
-                    task.status = TaskStatus.COMPLETED
-                    task.progress = 1.0
-                    task.downloaded = task.total
-                    external_msg = _open_torrent_external(
-                        torrent_path,
-                        download_dir,
-                    )
-                    _set_fast_queue_notice(
-                        task,
-                        (
-                            f"Task #{task.id}: using torrent via external client "
-                            f"({best_torrent.seeds} seed(s); embedded libtorrent unavailable). {external_msg}"
-                        ),
-                    )
-                    _save_torrent_task_metadata(task, config)
-                    _notify(on_update, task)
-                    return
                 elif best_torrent.seeds <= 0:
                     direct_reason = "available torrents have 0 seeds"
                 else:
@@ -418,24 +424,6 @@ def _save_torrent_task_metadata(task: DownloadTask, config: Config) -> None:
     if not task.gallery or not task.torrent_path:
         return
     save_torrent_metadata(task.gallery, task.torrent_path, config)
-
-
-def _open_torrent_external(torrent_path: str, download_dir: str) -> str:
-    import os
-    import shutil
-    import subprocess
-
-    target_dir = str(Path(download_dir).resolve())
-    qbt = shutil.which("qbittorrent")
-    if qbt:
-        subprocess.Popen([qbt, f"--save-path={target_dir}", torrent_path])
-        return "Opened with qBittorrent."
-
-    try:
-        os.startfile(torrent_path)
-        return "Opened with default torrent client."
-    except OSError:
-        return f"No torrent client found; saved .torrent at {torrent_path}."
 
 
 def _set_fast_queue_notice(task: DownloadTask, message: str) -> None:
