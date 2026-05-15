@@ -53,13 +53,14 @@ no_sub_menu = false
 # Treat non-command, non-link input as a search keyword
 auto_detect_search_keyword = true
 
-[sorting]
-# Gallery folder sorting: auto, artist, keyword, off
+[save]
+# Gallery folder sorting: auto, artist, publisher, keyword, off
 auto_sort = "off"
 # Comma-separated keywords for keyword sorting. Earlier keywords have higher priority.
 sort_by_keyword_keywords = ""
-# Lower number wins when auto_sort = "auto" and both artist/keyword are available.
+# Lower number wins when auto_sort = "auto" and multiple methods are available.
 auto_sort_artist_priority = 10
+auto_sort_publisher_priority = 15
 auto_sort_keyword_priority = 20
 
 [filter]

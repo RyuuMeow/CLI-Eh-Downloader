@@ -50,10 +50,11 @@ class Config:
     search_no_sub_menu: bool = False
     search_auto_detect_search_keyword: bool = True
 
-    # Sorting settings
-    auto_sort: str = "off"  # auto, artist, keyword, off
+    # Save settings
+    auto_sort: str = "off"  # auto, artist, publisher, keyword, off
     sort_by_keyword_keywords: str = ""
     auto_sort_artist_priority: int = 10
+    auto_sort_publisher_priority: int = 15
     auto_sort_keyword_priority: int = 20
 
     # Filter settings
@@ -128,10 +129,11 @@ class Config:
             f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
             f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
             f"auto_detect_search_keyword = {'true' if self.search_auto_detect_search_keyword else 'false'}\n",
-            "\n[sorting]\n",
+            "\n[save]\n",
             f"auto_sort = {_toml_string(_normalize_auto_sort(self.auto_sort))}\n",
             f"sort_by_keyword_keywords = {_toml_string(self.sort_by_keyword_keywords)}\n",
             f"auto_sort_artist_priority = {self.auto_sort_artist_priority}\n",
+            f"auto_sort_publisher_priority = {self.auto_sort_publisher_priority}\n",
             f"auto_sort_keyword_priority = {self.auto_sort_keyword_priority}\n",
             "\n[filter]\n",
             f"anti_ai = {'true' if self.anti_ai else 'false'}\n",
@@ -201,10 +203,11 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
             "no_sub_menu",
             "auto_detect_search_keyword",
         ),
-        "sorting": (
+        "save": (
             "auto_sort",
             "sort_by_keyword_keywords",
             "auto_sort_artist_priority",
+            "auto_sort_publisher_priority",
             "auto_sort_keyword_priority",
         ),
         "filter": ("anti_ai", "keyword_filter"),
@@ -286,17 +289,19 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
     if "auto_detect_search_keyword" in search:
         config.search_auto_detect_search_keyword = bool(search["auto_detect_search_keyword"])
 
-    sorting = data.get("sorting", {})
-    if "auto_sort" in sorting:
-        config.auto_sort = _normalize_auto_sort(str(sorting["auto_sort"]))
-    if "sort_by_keyword_keywords" in sorting:
-        config.sort_by_keyword_keywords = str(sorting["sort_by_keyword_keywords"])
-    elif "keywords" in sorting:
-        config.sort_by_keyword_keywords = str(sorting["keywords"])
-    if "auto_sort_artist_priority" in sorting:
-        config.auto_sort_artist_priority = int(sorting["auto_sort_artist_priority"])
-    if "auto_sort_keyword_priority" in sorting:
-        config.auto_sort_keyword_priority = int(sorting["auto_sort_keyword_priority"])
+    save = data.get("save", data.get("sorting", {}))
+    if "auto_sort" in save:
+        config.auto_sort = _normalize_auto_sort(str(save["auto_sort"]))
+    if "sort_by_keyword_keywords" in save:
+        config.sort_by_keyword_keywords = str(save["sort_by_keyword_keywords"])
+    elif "keywords" in save:
+        config.sort_by_keyword_keywords = str(save["keywords"])
+    if "auto_sort_artist_priority" in save:
+        config.auto_sort_artist_priority = int(save["auto_sort_artist_priority"])
+    if "auto_sort_publisher_priority" in save:
+        config.auto_sort_publisher_priority = int(save["auto_sort_publisher_priority"])
+    if "auto_sort_keyword_priority" in save:
+        config.auto_sort_keyword_priority = int(save["auto_sort_keyword_priority"])
 
     filters = data.get("filter", {})
     if "anti_ai" in filters:
@@ -341,6 +346,10 @@ def _normalize_auto_sort(value: str) -> str:
         "auto": "auto",
         "artist": "artist",
         "sort_by_artist": "artist",
+        "publisher": "publisher",
+        "sort_by_publisher": "publisher",
+        "uploader": "publisher",
+        "sort_by_uploader": "publisher",
         "keyword": "keyword",
         "sort_by_keyword": "keyword",
         "off": "off",

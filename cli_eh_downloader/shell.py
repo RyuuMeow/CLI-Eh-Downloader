@@ -2363,6 +2363,7 @@ class Shell:
         sort_labels = {
             "auto": "Auto",
             "artist": "Sort by Artist",
+            "publisher": "Sort by Publisher",
             "keyword": "Sort by keyword",
             "off": "Off",
         }
@@ -2414,7 +2415,7 @@ class Shell:
                 ],
             ),
             (
-                "Sorting",
+                "Save",
                 [
                     ("auto_sort", "Auto Sort"),
                     ("sort_by_keyword_keywords", "Sort by keyword keywords"),
@@ -2439,6 +2440,7 @@ class Shell:
             if key == "auto_sort_priority":
                 return (
                     f"Artist={self.config.auto_sort_artist_priority}, "
+                    f"Publisher={self.config.auto_sort_publisher_priority}, "
                     f"Keyword={self.config.auto_sort_keyword_priority}"
                 )
             if key in ("ipb_pass_hash", "igneous", "sk") and value:
@@ -2513,6 +2515,7 @@ class Shell:
                             choices=[
                                 questionary.Choice(title="Auto", value="auto"),
                                 questionary.Choice(title="Sort by Artist", value="artist"),
+                                questionary.Choice(title="Sort by Publisher", value="publisher"),
                                 questionary.Choice(title="Sort by keyword", value="keyword"),
                                 questionary.Choice(title="Off", value="off"),
                             ],
@@ -2524,6 +2527,7 @@ class Shell:
                 elif selected_key == "auto_sort_priority":
                     priority_items = [
                         ("auto_sort_artist_priority", "Sort by Artist"),
+                        ("auto_sort_publisher_priority", "Sort by Publisher"),
                         ("auto_sort_keyword_priority", "Sort by keyword"),
                     ]
                     priority_choices = [
@@ -2590,6 +2594,13 @@ class Shell:
             "ask": "Ask",
             "direct": "Direct Download",
         }
+        sort_labels = {
+            "auto": "Auto",
+            "artist": "Sort by Artist",
+            "publisher": "Sort by Publisher",
+            "keyword": "Sort by keyword",
+            "off": "Off",
+        }
 
         table = Table(
             title="Configuration",
@@ -2625,10 +2636,11 @@ class Shell:
             ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
             ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
             ("Search", "auto_detect_search_keyword", str(c.search_auto_detect_search_keyword)),
-            ("Sorting", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
-            ("Sorting", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
-            ("Sorting", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
-            ("Sorting", "auto_sort_keyword_priority", str(c.auto_sort_keyword_priority)),
+            ("Save", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
+            ("Save", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
+            ("Save", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
+            ("Save", "auto_sort_publisher_priority", str(c.auto_sort_publisher_priority)),
+            ("Save", "auto_sort_keyword_priority", str(c.auto_sort_keyword_priority)),
             ("Filter", "anti_ai", str(c.anti_ai)),
             ("Filter", "keyword_filter", c.filter_keyword_filter or "[dim]not set[/dim]"),
             ("Page Download", "fetch_mode", c.page_download_fetch_mode),
@@ -2691,10 +2703,14 @@ class Shell:
             "auto_sort": "auto_sort",
             "sort": "auto_sort",
             "sorting": "auto_sort",
+            "save": "auto_sort",
             "sort_by_keyword_keywords": "sort_by_keyword_keywords",
             "sort_keywords": "sort_by_keyword_keywords",
             "auto_sort_artist_priority": "auto_sort_artist_priority",
             "sort_artist_priority": "auto_sort_artist_priority",
+            "auto_sort_publisher_priority": "auto_sort_publisher_priority",
+            "sort_publisher_priority": "auto_sort_publisher_priority",
+            "sort_uploader_priority": "auto_sort_publisher_priority",
             "auto_sort_keyword_priority": "auto_sort_keyword_priority",
             "sort_keyword_priority": "auto_sort_keyword_priority",
             "anti_ai": "anti_ai",
@@ -2708,7 +2724,13 @@ class Shell:
             return
 
         # Type coercion
-        if attr in ("max_parallel", "retry_count", "auto_sort_artist_priority", "auto_sort_keyword_priority"):
+        if attr in (
+            "max_parallel",
+            "retry_count",
+            "auto_sort_artist_priority",
+            "auto_sort_publisher_priority",
+            "auto_sort_keyword_priority",
+        ):
             try:
                 setattr(self.config, attr, int(value))
             except ValueError:

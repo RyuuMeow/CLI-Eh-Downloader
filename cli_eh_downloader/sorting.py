@@ -33,7 +33,7 @@ def split_keywords(value: str) -> list[str]:
 
 
 def resolve_sorted_download_dir(base_dir: str, gallery: GalleryInfo, config: Config) -> str:
-    """Return the base download directory after applying artist/keyword sorting."""
+    """Return the base download directory after applying save sorting."""
     base = Path(base_dir)
     sort_mode = config.auto_sort
     if sort_mode == "off":
@@ -41,15 +41,20 @@ def resolve_sorted_download_dir(base_dir: str, gallery: GalleryInfo, config: Con
 
     candidates: list[tuple[int, str]] = []
     artist_folder = _artist_folder(gallery)
+    publisher_folder = _publisher_folder(gallery)
     keyword_folder = _keyword_folder(gallery, config)
 
     if sort_mode == "artist":
         return str(base / artist_folder) if artist_folder else str(base)
+    if sort_mode == "publisher":
+        return str(base / publisher_folder) if publisher_folder else str(base)
     if sort_mode == "keyword":
         return str(base / keyword_folder) if keyword_folder else str(base)
 
     if artist_folder:
         candidates.append((config.auto_sort_artist_priority, artist_folder))
+    if publisher_folder:
+        candidates.append((config.auto_sort_publisher_priority, publisher_folder))
     if keyword_folder:
         candidates.append((config.auto_sort_keyword_priority, keyword_folder))
     if not candidates:
@@ -96,7 +101,16 @@ def _artist_folder(gallery: GalleryInfo) -> str:
     return sanitize_filename(artists[0])
 
 
+def _publisher_folder(gallery: GalleryInfo) -> str:
+    publishers = gallery.tags.get("publisher", [])
+    if publishers:
+        return sanitize_filename(publishers[0])
+    return sanitize_filename(gallery.uploader) if gallery.uploader else ""
+
+
 def _keyword_folder(gallery: GalleryInfo, config: Config) -> str:
+    if not config.sort_by_keyword_keywords.strip():
+        return ""
     searchable = " ".join([gallery.title, gallery.title_jpn, *_all_tags(gallery)]).lower()
     for keyword in split_keywords(config.sort_by_keyword_keywords):
         if keyword.lower() in searchable:
