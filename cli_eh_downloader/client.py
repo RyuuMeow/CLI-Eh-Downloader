@@ -114,6 +114,24 @@ class EHClient:
 
         raise RuntimeError(f"Failed to POST {url} after {self.config.retry_count} attempts")
 
+    async def post_form(self, url: str, data: dict[str, Any]) -> httpx.Response:
+        """POST form data and return the raw response."""
+        await self._rate_limit()
+        client = await self._ensure_client()
+
+        for attempt in range(self.config.retry_count):
+            try:
+                response = await client.post(url, data=data)
+                response.raise_for_status()
+                return response
+            except (httpx.TimeoutException, httpx.HTTPStatusError) as e:
+                log.warning("POST form %s attempt %d failed: %s", url[:80], attempt + 1, e)
+                if attempt == self.config.retry_count - 1:
+                    raise
+                await asyncio.sleep(self.config.retry_delay)
+
+        raise RuntimeError(f"Failed to POST form {url} after {self.config.retry_count} attempts")
+
     async def download_file(
         self,
         url: str,

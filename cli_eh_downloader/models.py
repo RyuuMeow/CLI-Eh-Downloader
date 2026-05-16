@@ -69,6 +69,7 @@ class TorrentInfo:
     peers: int
     downloads: int
     posted: str
+    gtid: str = ""      # ExHentai gallery torrent id; used when URL requires an info POST first
 
 
 @dataclass

@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import re
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import unquote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -231,57 +231,271 @@ async def fetch_torrent_list(client: EHClient, gallery: GalleryInfo) -> list[Tor
     torrent_url = build_torrent_page_url(gallery.gid, gallery.token, gallery.site)
     response = await client.get(torrent_url)
 
-    soup = BeautifulSoup(response.text, "lxml")
+    torrents = parse_torrent_list_html(response.text, str(response.url))
+    log.info("Found %d torrents for gallery %d", len(torrents), gallery.gid)
+    return torrents
+
+
+def parse_torrent_list_html(html: str, base_url: str = "") -> list[TorrentInfo]:
+    """Parse available torrents from a gallery torrent page HTML document."""
+    soup = BeautifulSoup(html, "lxml")
     torrents: list[TorrentInfo] = []
 
-    # Each torrent is in a <form> containing:
-    #   - A <table> with stats (Posted, Size, Seeds, Peers, Downloads)
-    #   - An <a href="https://ehtracker.org/get/..."> with the real torrent name
-    forms = soup.select("form[action]")
+    # Torrent pages have changed shape over time. Most entries are form/table
+    # blocks, but the reliable anchor is the ehtracker "get" link itself.
+    tracker_links = [
+        link for link in soup.select("a[href]")
+        if _is_torrent_download_href(str(link.get("href", "")))
+    ]
+    seen_urls: set[str] = set()
 
-    for form in forms:
+    for tracker_link in tracker_links:
         try:
-            text = form.get_text(" ", strip=True)
-
-            # The real torrent download URL and name come from the ehtracker link
-            tracker_link = form.select_one("a[href*='ehtracker.org']")
-            if not tracker_link:
+            download_url = _torrent_download_url_from_link(tracker_link, base_url)
+            if download_url in seen_urls:
                 continue
+            seen_urls.add(download_url)
 
-            download_url = tracker_link["href"]
-            name = tracker_link.get_text(strip=True)
+            container = _find_torrent_entry_container(tracker_link)
+            text = container.get_text(" ", strip=True) if container else tracker_link.get_text(" ", strip=True)
 
-            # Extract metrics from the table text
-            seeds = _extract_int(text, r"Seeds:\s*(\d+)")
-            peers = _extract_int(text, r"Peers:\s*(\d+)")
-            downloads = _extract_int(text, r"Downloads:\s*(\d+)")
-            size_match = re.search(r"Size:\s*([\d.]+\s*\w+)", text)
-            size = size_match.group(1) if size_match else ""
-            posted_match = re.search(r"Posted:\s*([\d-]+\s*[\d:]+)", text)
-            posted = posted_match.group(1) if posted_match else ""
+            name = tracker_link.get_text(" ", strip=True) or _torrent_name_from_url(download_url)
+            stats = _extract_torrent_stats(container, text)
 
             torrents.append(TorrentInfo(
                 name=name,
                 url=download_url,
-                size=size,
-                seeds=seeds,
-                peers=peers,
-                downloads=downloads,
-                posted=posted,
+                size=stats["size"],
+                seeds=stats["seeds"],
+                peers=stats["peers"],
+                downloads=stats["downloads"],
+                posted=stats["posted"],
             ))
         except Exception:
-            continue
+            log.debug("Failed to parse torrent entry", exc_info=True)
+
+    if tracker_links:
+        torrents.sort(key=lambda t: t.seeds, reverse=True)
+        return torrents
+
+    for form in _find_torrent_info_forms(soup):
+        try:
+            gtid_input = form.select_one("input[name='gtid']")
+            gtid = str(gtid_input.get("value", "")).strip() if gtid_input else ""
+            if not gtid:
+                continue
+
+            info_url = urljoin(base_url, str(form.get("action", "")))
+            dedupe_key = f"gtid:{gtid}"
+            if dedupe_key in seen_urls:
+                continue
+            seen_urls.add(dedupe_key)
+
+            text = form.get_text(" ", strip=True)
+            stats = _extract_torrent_stats(form, text)
+            name = _extract_torrent_entry_name(form) or f"torrent_{gtid}"
+
+            torrents.append(TorrentInfo(
+                name=name,
+                url=info_url,
+                size=stats["size"],
+                seeds=stats["seeds"],
+                peers=stats["peers"],
+                downloads=stats["downloads"],
+                posted=stats["posted"],
+                gtid=gtid,
+            ))
+        except Exception:
+            log.debug("Failed to parse torrent info form", exc_info=True)
 
     # Sort by seeds (highest first)
     torrents.sort(key=lambda t: t.seeds, reverse=True)
-    log.info("Found %d torrents for gallery %d", len(torrents), gallery.gid)
     return torrents
 
 
 def _extract_int(text: str, pattern: str) -> int:
     """Extract an integer from text using a regex pattern."""
     match = re.search(pattern, text)
-    return int(match.group(1)) if match else 0
+    return int(match.group(1).replace(",", "")) if match else 0
+
+
+def _is_torrent_download_href(href: str) -> bool:
+    href_lower = href.lower()
+    if not href_lower:
+        return False
+    if "ehtracker.org/get/" in href_lower:
+        return True
+    if "/torrent/" in href_lower and href_lower.split("?", 1)[0].endswith(".torrent"):
+        return True
+    parsed = urlparse(href_lower)
+    return parsed.netloc.endswith("ehtracker.org") and parsed.path.startswith("/get/")
+
+
+def _torrent_download_url_from_link(link: Any, base_url: str) -> str:
+    onclick = str(link.get("onclick", ""))
+    match = re.search(r"document\.location\s*=\s*['\"]([^'\"]+\.torrent)['\"]", onclick, re.IGNORECASE)
+    if match:
+        return urljoin(base_url, match.group(1))
+    return urljoin(base_url, str(link.get("href", "")))
+
+
+def _find_torrent_info_forms(soup: BeautifulSoup) -> list[Any]:
+    forms = []
+    for form in soup.select("form[action]"):
+        if not form.select_one("input[name='gtid']"):
+            continue
+        if not form.select_one("input[name='torrent_info']"):
+            continue
+        forms.append(form)
+    return forms
+
+
+def _find_torrent_entry_container(link) -> Any:
+    for selector in ("form", "tr", "table"):
+        container = link.find_parent(selector)
+        if container:
+            return container
+    parent = link.parent
+    for _ in range(3):
+        if not parent:
+            break
+        text = parent.get_text(" ", strip=True)
+        if "Seeds" in text or "Peers" in text or "Downloads" in text:
+            return parent
+        parent = parent.parent
+    return link.parent or link
+
+
+def _extract_torrent_stats(container: Any, text: str) -> dict[str, Any]:
+    table_stats = _extract_torrent_table_stats(container)
+
+    seeds = table_stats.get("seeds", 0) or _extract_labeled_int(text, "Seeds")
+    peers = table_stats.get("peers", 0) or _extract_labeled_int(text, "Peers")
+    downloads = table_stats.get("downloads", 0) or _extract_labeled_int(text, "Downloads")
+    size = table_stats.get("size", "") or _extract_labeled_text(text, "Size", r"[\d.]+\s*(?:[KMGT]i?B|bytes?)")
+    posted = table_stats.get("posted", "") or _extract_labeled_text(
+        text,
+        "Posted",
+        r"\d{4}-\d{2}-\d{2}(?:\s+\d{2}:\d{2})?",
+    )
+
+    return {
+        "size": size,
+        "seeds": seeds,
+        "peers": peers,
+        "downloads": downloads,
+        "posted": posted,
+    }
+
+
+def _extract_labeled_int(text: str, label: str) -> int:
+    return _extract_int(text, rf"\b{re.escape(label)}\b\s*:?\s*([0-9][0-9,]*)")
+
+
+def _extract_labeled_text(text: str, label: str, value_pattern: str) -> str:
+    match = re.search(rf"\b{re.escape(label)}\b\s*:?\s*({value_pattern})", text, re.IGNORECASE)
+    return match.group(1).strip() if match else ""
+
+
+def _extract_torrent_table_stats(container: Any) -> dict[str, Any]:
+    stats: dict[str, Any] = {}
+    if not container:
+        return stats
+
+    for row in container.select("tr"):
+        cells = [cell.get_text(" ", strip=True) for cell in row.select("th, td")]
+        cells = [cell for cell in cells if cell]
+        if len(cells) < 2:
+            continue
+
+        for cell in cells:
+            key, value = _split_labeled_torrent_cell(cell)
+            if key and value:
+                stats[key] = _coerce_torrent_stat_value(key, value)
+        if any(_split_labeled_torrent_cell(cell)[0] for cell in cells):
+            continue
+
+        # Label/value rows, e.g. "Seeds" "12".
+        if len(cells) == 2:
+            key = _normalize_torrent_stat_label(cells[0])
+            if key:
+                stats[key] = _coerce_torrent_stat_value(key, cells[1])
+            continue
+
+        # Header row followed by value row, e.g. "Posted Size Seeds..." then values.
+        keys = [_normalize_torrent_stat_label(cell) for cell in cells]
+        if any(keys):
+            next_row = row.find_next_sibling("tr")
+            if not next_row:
+                continue
+            values = [cell.get_text(" ", strip=True) for cell in next_row.select("th, td")]
+            for key, value in zip(keys, values):
+                if key and value:
+                    stats[key] = _coerce_torrent_stat_value(key, value)
+
+    return stats
+
+
+def _normalize_torrent_stat_label(label: str) -> str:
+    normalized = re.sub(r"[^a-z]", "", label.lower())
+    aliases = {
+        "posted": "posted",
+        "size": "size",
+        "seeds": "seeds",
+        "seed": "seeds",
+        "peers": "peers",
+        "peer": "peers",
+        "downloads": "downloads",
+        "download": "downloads",
+        "completed": "downloads",
+    }
+    return aliases.get(normalized, "")
+
+
+def _split_labeled_torrent_cell(text: str) -> tuple[str, str]:
+    match = re.match(r"\s*([A-Za-z]+)\s*:\s*(.+?)\s*$", text)
+    if not match:
+        return "", ""
+    return _normalize_torrent_stat_label(match.group(1)), match.group(2)
+
+
+def _coerce_torrent_stat_value(key: str, value: str) -> Any:
+    if key in {"seeds", "peers", "downloads"}:
+        match = re.search(r"[0-9][0-9,]*", value)
+        return int(match.group(0).replace(",", "")) if match else 0
+    return value.strip()
+
+
+def _torrent_name_from_url(url: str) -> str:
+    path_name = unquote(urlparse(url).path.rstrip("/").split("/")[-1])
+    return path_name or "torrent"
+
+
+def _extract_torrent_entry_name(container: Any) -> str:
+    if not container:
+        return ""
+
+    for row in reversed(container.select("tr")):
+        cells = [cell.get_text(" ", strip=True) for cell in row.select("td, th")]
+        for cell in reversed(cells):
+            if _looks_like_torrent_name(cell):
+                return cell
+
+    for text in reversed(list(container.stripped_strings)):
+        if _looks_like_torrent_name(text):
+            return text
+    return ""
+
+
+def _looks_like_torrent_name(text: str) -> bool:
+    if not text:
+        return False
+    lowered = text.lower()
+    if lowered in {"information", "download", "back to index"}:
+        return False
+    if any(label in lowered for label in ("posted:", "size:", "seeds:", "peers:", "downloads:", "uploader:")):
+        return False
+    return lowered.endswith((".zip", ".torrent", ".cbz", ".rar", ".7z")) or len(text) > 20
 
 
 async def search_galleries(

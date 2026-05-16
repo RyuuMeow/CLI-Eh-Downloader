@@ -10,9 +10,13 @@ import asyncio
 import os
 from pathlib import Path
 from typing import Callable
+from urllib.parse import urljoin
+
+from bs4 import BeautifulSoup
 
 from .client import EHClient
 from .models import TorrentInfo
+from .parser import parse_torrent_list_html
 
 # Try to import libtorrent (optional dependency)
 try:
@@ -46,8 +50,52 @@ async def download_torrent_file(
     safe_name += ".torrent"
     
     dest_path = str(dest_dir / safe_name)
-    await client.download_file(torrent.url, dest_path)
+    download_url = await _resolve_torrent_download_url(client, torrent)
+    await client.download_file(download_url, dest_path)
     return dest_path
+
+
+async def _resolve_torrent_download_url(client: EHClient, torrent: TorrentInfo) -> str:
+    if not torrent.gtid:
+        return torrent.url
+
+    response = await client.post_form(
+        torrent.url,
+        {
+            "gtid": torrent.gtid,
+            "torrent_info": "Information",
+        },
+    )
+    direct_url = _find_personalized_torrent_url(response.text, str(response.url))
+    if direct_url:
+        return direct_url
+
+    parsed = parse_torrent_list_html(response.text, str(response.url))
+    if parsed:
+        return parsed[0].url
+
+    raise ValueError(f"Could not resolve torrent download URL for gtid {torrent.gtid}")
+
+
+def _find_personalized_torrent_url(html: str, base_url: str) -> str:
+    soup = BeautifulSoup(html, "lxml")
+    redistributable = ""
+    first_torrent = ""
+
+    for link in soup.select("a[href]"):
+        href = str(link.get("href", ""))
+        if "/torrent/" not in href.lower() or not href.lower().split("?", 1)[0].endswith(".torrent"):
+            continue
+        url = urljoin(base_url, href)
+        text = link.get_text(" ", strip=True).lower()
+        if not first_torrent:
+            first_torrent = url
+        if "personalized" in text:
+            return url
+        if "redistributable" in text:
+            redistributable = url
+
+    return redistributable or first_torrent
 
 
 async def download_via_torrent(
