@@ -49,6 +49,7 @@ class Config:
     search_download_gallery_onclick: bool = False
     search_no_sub_menu: bool = False
     search_auto_detect_search_keyword: bool = True
+    search_default_search_site: str = "e-hentai"  # e-hentai, exhentai, both
 
     # Save settings
     auto_sort: str = "off"  # auto, artist, publisher, keyword, off
@@ -129,6 +130,7 @@ class Config:
             f"download_gallery_onclick = {'true' if self.search_download_gallery_onclick else 'false'}\n",
             f"no_sub_menu = {'true' if self.search_no_sub_menu else 'false'}\n",
             f"auto_detect_search_keyword = {'true' if self.search_auto_detect_search_keyword else 'false'}\n",
+            f"default_search_site = {_toml_string(_normalize_search_site(self.search_default_search_site))}\n",
             "\n[save]\n",
             f"auto_sort = {_toml_string(_normalize_auto_sort(self.auto_sort))}\n",
             f"sort_by_keyword_keywords = {_toml_string(self.sort_by_keyword_keywords)}\n",
@@ -202,6 +204,7 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
             "download_gallery_onclick",
             "no_sub_menu",
             "auto_detect_search_keyword",
+            "default_search_site",
         ),
         "save": (
             "auto_sort",
@@ -288,6 +291,8 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.search_no_sub_menu = bool(search["no_sub_menu"])
     if "auto_detect_search_keyword" in search:
         config.search_auto_detect_search_keyword = bool(search["auto_detect_search_keyword"])
+    if "default_search_site" in search:
+        config.search_default_search_site = _normalize_search_site(str(search["default_search_site"]))
 
     save = data.get("save", data.get("sorting", {}))
     if "auto_sort" in save:
@@ -373,6 +378,25 @@ def _normalize_page_fetch_mode(value: str) -> str:
         "custom_range": "range",
     }
     return aliases.get(normalized, "current")
+
+
+def _normalize_search_site(value: str) -> str:
+    normalized = value.strip().lower().replace("-", "_").replace(" ", "_")
+    aliases = {
+        "e": "e-hentai",
+        "eh": "e-hentai",
+        "e_hentai": "e-hentai",
+        "ehentai": "e-hentai",
+        "e-hentai": "e-hentai",
+        "ex": "exhentai",
+        "exh": "exhentai",
+        "ex_hentai": "exhentai",
+        "exhentai": "exhentai",
+        "ex-hentai": "exhentai",
+        "both": "both",
+        "all": "both",
+    }
+    return aliases.get(normalized, "e-hentai")
 
 
 def _toml_string(value: str) -> str:

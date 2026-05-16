@@ -289,7 +289,7 @@ def print_help() -> None:
                 ("<image page url>", "Resolve a gallery image page back to its gallery"),
                 ("<listing url>", "Paste a tag/uploader/category URL for bulk download"),
                 ("<keyword>", "Search galleries when auto-detect is enabled"),
-                ("search <keyword>", "Search galleries; bulk mode is toggled in results"),
+                ("search [-e] [-ex] <keyword>", "Search E-Hentai, ExHentai, or both"),
             ],
         ),
         (

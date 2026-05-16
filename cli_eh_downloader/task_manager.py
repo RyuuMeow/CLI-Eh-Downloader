@@ -9,7 +9,7 @@ from typing import Callable, Optional
 from .client import EHClient
 from .config import Config
 from .downloader import process_task
-from .models import DownloadMethod, DownloadTask, GalleryInfo, TaskStatus, TorrentInfo
+from .models import DownloadMethod, DownloadTask, GalleryInfo, SiteType, TaskStatus, TorrentInfo
 
 
 class TaskManager:
@@ -94,17 +94,23 @@ class TaskManager:
             torrents = await fetch_torrent_list(client, gallery)
         return gallery, torrents
 
-    def search_sync(self, query: str, page: int = 0, url_override: str = ""):
+    def search_sync(self, query: str, page: int = 0, url_override: str = "", site: SiteType = SiteType.E_HENTAI):
         """Synchronously search galleries (blocks the caller). Returns SearchPage."""
         future = asyncio.run_coroutine_threadsafe(
-            self._search_async(query, page, url_override), self._loop
+            self._search_async(query, page, url_override, site), self._loop
         )
         return future.result()
 
-    async def _search_async(self, query: str, page: int = 0, url_override: str = ""):
+    async def _search_async(
+        self,
+        query: str,
+        page: int = 0,
+        url_override: str = "",
+        site: SiteType = SiteType.E_HENTAI,
+    ):
         from .parser import search_galleries
         client = self._ensure_client()
-        return await search_galleries(client, query, page=page, url_override=url_override)
+        return await search_galleries(client, query, site=site, page=page, url_override=url_override)
 
     def fetch_listing_sync(self, url: str, page: int = 0, url_override: str = ""):
         """Synchronously fetch a listing page (tag, uploader, etc.). Returns SearchPage."""

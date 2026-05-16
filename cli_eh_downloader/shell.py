@@ -23,7 +23,17 @@ from .display import (
     print_task_added,
     print_task_update,
 )
-from .models import BulkDownloadConfig, BulkDownloadMode, DownloadMethod, DownloadTask, FetchMode, SearchResult, TaskStatus
+from .models import (
+    BulkDownloadConfig,
+    BulkDownloadMode,
+    DownloadMethod,
+    DownloadTask,
+    FetchMode,
+    SearchPage,
+    SearchResult,
+    SiteType,
+    TaskStatus,
+)
 from .sorting import (
     gallery_filter_reason,
     gallery_matches_keyword_filter,
@@ -412,29 +422,44 @@ class Shell:
         import urllib.parse
         import webbrowser
 
+        query, sites = self._parse_search_query_and_sites(query)
+        if not query:
+            print_error("Usage: search [-e] [-ex] <keyword>")
+            return
+        if not sites:
+            print_info("No search site available.")
+            return
+
         current_page = 0
         downloaded_gids: set[int] = set()
         opened_gids: set[int] = set()
         bulk_mode = self.config.search_bulk_mode_default
         selected_results: dict[int, SearchResult] = {}
         cursor_choice: tuple[str, int | None] = ("result", 0)
-        current_search_url = f"https://e-hentai.org/?f_search={urllib.parse.quote(query)}"
+        search_pages: dict[SiteType, SearchPage] = {}
+        current_search_urls = [
+            f"{self._search_site_base_url(site)}/?f_search={urllib.parse.quote(query)}"
+            for site in sites
+        ]
 
         # Fetch first page
-        console.print(f"  [cyan]Searching: {query}...[/cyan]")
+        console.print(f"  [cyan]Searching {self._search_sites_label(sites)}: {query}...[/cyan]")
         try:
-            search_page = self.manager.search_sync(query, page=current_page)
+            search_pages = self._fetch_search_pages(query, sites, current_page)
         except Exception as e:
             print_error(f"Search failed: {e}")
             return
 
+        search_page = self._merge_search_pages(search_pages, current_page)
         if not search_page.results:
             print_info("No results found.")
             return
         if self.config.search_open_result_website_automatically:
-            webbrowser.open(current_search_url)
+            for url in current_search_urls:
+                webbrowser.open(url)
 
         while True:
+            search_page = self._merge_search_pages(search_pages, current_page)
             results, filtered_count = self._filter_search_results(search_page.results)
             total = search_page.total_results
 
@@ -444,7 +469,11 @@ class Shell:
             # Header with pagination info
             total_str = f"{total:,}" if total else f"{len(results)}+"
             page_display = current_page + 1
-            console.print(f"  [cyan]Search: {query}[/cyan]  |  [green]{total_str} results[/green]  |  [yellow]Page {page_display}[/yellow]\n")
+            console.print(
+                f"  [cyan]Search: {query}[/cyan]  |  "
+                f"[magenta]{self._search_sites_label(sites)}[/magenta]  |  "
+                f"[green]{total_str} results[/green]  |  [yellow]Page {page_display}[/yellow]\n"
+            )
             if filtered_count:
                 console.print(f"  [yellow]Filtered out {filtered_count} result(s) by global filters[/yellow]\n")
 
@@ -471,38 +500,55 @@ class Shell:
                 return
 
             if action == "next":
-                next_url = search_page.next_url
                 current_page += 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
-                    search_page = self.manager.search_sync(query, page=current_page, url_override=next_url)
-                    current_search_url = next_url
+                    override_urls = {site: page.next_url for site, page in search_pages.items()}
+                    search_pages = self._fetch_search_pages(
+                        query,
+                        sites,
+                        current_page,
+                        override_urls,
+                    )
+                    current_search_urls = [
+                        url for url in override_urls.values() if url
+                    ]
                     cursor_choice = ("result", 0)
                     if self.config.search_open_result_website_automatically:
-                        webbrowser.open(current_search_url)
+                        for url in current_search_urls:
+                            webbrowser.open(url)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page -= 1
                 continue
 
             if action == "prev":
-                prev_url = search_page.prev_url
                 current_page -= 1
                 console.print(f"\n  [cyan]Loading page {current_page + 1}...[/cyan]")
                 try:
-                    search_page = self.manager.search_sync(query, page=current_page, url_override=prev_url)
-                    current_search_url = prev_url
+                    override_urls = {site: page.prev_url for site, page in search_pages.items()}
+                    search_pages = self._fetch_search_pages(
+                        query,
+                        sites,
+                        current_page,
+                        override_urls,
+                    )
+                    current_search_urls = [
+                        url for url in override_urls.values() if url
+                    ]
                     cursor_choice = ("result", 0)
                     if self.config.search_open_result_website_automatically:
-                        webbrowser.open(current_search_url)
+                        for url in current_search_urls:
+                            webbrowser.open(url)
                 except Exception as e:
                     print_error(f"Failed to load page: {e}")
                     current_page += 1
                 continue
 
             if action == "open_search_page":
-                webbrowser.open(current_search_url)
-                print_success("Opened search page in browser.")
+                for url in current_search_urls:
+                    webbrowser.open(url)
+                print_success("Opened search page(s) in browser.")
                 continue
 
             if action == "toggle_bulk":
@@ -541,6 +587,103 @@ class Shell:
 
             if action == "download":
                 self._search_download_result(selected, downloaded_gids)
+
+    def _parse_search_query_and_sites(self, query: str) -> tuple[str, list[SiteType]]:
+        try:
+            parts = shlex.split(query)
+        except ValueError:
+            parts = query.split()
+
+        explicit_sites: list[SiteType] = []
+        query_parts: list[str] = []
+        for part in parts:
+            lowered = part.lower()
+            if lowered == "-e":
+                if SiteType.E_HENTAI not in explicit_sites:
+                    explicit_sites.append(SiteType.E_HENTAI)
+                continue
+            if lowered == "-ex":
+                if SiteType.EX_HENTAI not in explicit_sites:
+                    explicit_sites.append(SiteType.EX_HENTAI)
+                continue
+            query_parts.append(part)
+
+        sites = explicit_sites or self._default_search_sites()
+        sites = self._resolve_search_sites(sites)
+        return " ".join(query_parts), sites
+
+    def _default_search_sites(self) -> list[SiteType]:
+        mode = self.config.search_default_search_site
+        if mode == "exhentai":
+            return [SiteType.EX_HENTAI]
+        if mode == "both":
+            return [SiteType.E_HENTAI, SiteType.EX_HENTAI]
+        return [SiteType.E_HENTAI]
+
+    def _resolve_search_sites(self, sites: list[SiteType]) -> list[SiteType]:
+        resolved: list[SiteType] = []
+        for site in sites:
+            if site == SiteType.EX_HENTAI and not self.config.has_exhentai_cookies:
+                print_info("ExHentai search skipped: cookies are not configured.")
+                continue
+            if site not in resolved:
+                resolved.append(site)
+
+        if not resolved and SiteType.EX_HENTAI in sites:
+            print_info("Falling back to E-Hentai search.")
+            resolved.append(SiteType.E_HENTAI)
+        return resolved
+
+    def _fetch_search_pages(
+        self,
+        query: str,
+        sites: list[SiteType],
+        current_page: int,
+        url_overrides: dict[SiteType, str] | None = None,
+    ) -> dict[SiteType, SearchPage]:
+        pages: dict[SiteType, SearchPage] = {}
+        for site in sites:
+            url_override = (url_overrides or {}).get(site, "")
+            if url_overrides is not None and not url_override:
+                pages[site] = SearchPage(results=[], current_page=current_page)
+                continue
+            pages[site] = self.manager.search_sync(
+                query,
+                page=current_page,
+                url_override=url_override,
+                site=site,
+            )
+        return pages
+
+    @staticmethod
+    def _merge_search_pages(search_pages: dict[SiteType, SearchPage], current_page: int) -> SearchPage:
+        results: list[SearchResult] = []
+        total_results = 0
+        next_urls: list[str] = []
+        prev_urls: list[str] = []
+        for page in search_pages.values():
+            results.extend(page.results)
+            total_results += page.total_results
+            if page.next_url:
+                next_urls.append(page.next_url)
+            if page.prev_url:
+                prev_urls.append(page.prev_url)
+        return SearchPage(
+            results=results,
+            current_page=current_page,
+            total_results=total_results,
+            next_url=next_urls[0] if next_urls else "",
+            prev_url=prev_urls[0] if prev_urls else "",
+        )
+
+    @staticmethod
+    def _search_site_base_url(site: SiteType) -> str:
+        return "https://exhentai.org" if site == SiteType.EX_HENTAI else "https://e-hentai.org"
+
+    @staticmethod
+    def _search_sites_label(sites: list[SiteType]) -> str:
+        labels = ["ExHentai" if site == SiteType.EX_HENTAI else "E-Hentai" for site in sites]
+        return " + ".join(labels)
 
     def _search_select(
         self,
@@ -2389,6 +2532,11 @@ class Shell:
             "keyword": "Sort by keyword",
             "off": "Off",
         }
+        search_site_labels = {
+            "e-hentai": "E-Hentai",
+            "exhentai": "ExHentai",
+            "both": "Both",
+        }
         sections = [
             (
                 "General",
@@ -2434,6 +2582,7 @@ class Shell:
                     ("search_download_gallery_onclick", "Download Gallery Onclick"),
                     ("search_no_sub_menu", "No Sub-Menu"),
                     ("search_auto_detect_search_keyword", "Auto Detect Search Keyword"),
+                    ("search_default_search_site", "Default Search Site"),
                 ],
             ),
             (
@@ -2459,6 +2608,8 @@ class Shell:
                 return mode_labels.get(value, "Auto")
             if key == "auto_sort":
                 return sort_labels.get(value, "Off")
+            if key == "search_default_search_site":
+                return search_site_labels.get(value, "E-Hentai")
             if key == "auto_sort_priority":
                 return (
                     f"Artist={self.config.auto_sort_artist_priority}, "
@@ -2543,6 +2694,20 @@ class Shell:
                             ],
                             default=current,
                             instruction="(↑↓ select, Enter confirm, Ctrl-C back)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        new_value = None
+                elif selected_key == "search_default_search_site":
+                    try:
+                        new_value = questionary.select(
+                            "Default Search Site:",
+                            choices=[
+                                questionary.Choice(title="E-Hentai", value="e-hentai"),
+                                questionary.Choice(title="ExHentai", value="exhentai"),
+                                questionary.Choice(title="Both", value="both"),
+                            ],
+                            default=current,
+                            instruction="(\u2191\u2193 select, Enter confirm, Ctrl-C back)",
                         ).ask()
                     except KeyboardInterrupt:
                         new_value = None
@@ -2658,6 +2823,7 @@ class Shell:
             ("Search", "download_gallery_onclick", str(c.search_download_gallery_onclick)),
             ("Search", "no_sub_menu", str(c.search_no_sub_menu)),
             ("Search", "auto_detect_search_keyword", str(c.search_auto_detect_search_keyword)),
+            ("Search", "default_search_site", search_site_labels.get(c.search_default_search_site, "E-Hentai")),
             ("Save", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
             ("Save", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
             ("Save", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
@@ -2681,7 +2847,7 @@ class Shell:
         console.print(table)
 
     def _set_config(self, key: str, value: str) -> None:
-        from .config import _normalize_auto_sort, _normalize_download_mode
+        from .config import _normalize_auto_sort, _normalize_download_mode, _normalize_search_site
 
         key = key.lower().replace("-", "_")
 
@@ -2722,6 +2888,9 @@ class Shell:
             "search_no_sub_menu": "search_no_sub_menu",
             "auto_detect_search_keyword": "search_auto_detect_search_keyword",
             "search_auto_detect_search_keyword": "search_auto_detect_search_keyword",
+            "default_search_site": "search_default_search_site",
+            "search_default_search_site": "search_default_search_site",
+            "search_site": "search_default_search_site",
             "auto_sort": "auto_sort",
             "sort": "auto_sort",
             "sorting": "auto_sort",
@@ -2768,6 +2937,8 @@ class Shell:
             self.config.default_download_mode = _normalize_download_mode(value)
         elif attr == "auto_sort":
             self.config.auto_sort = _normalize_auto_sort(value)
+        elif attr == "search_default_search_site":
+            self.config.search_default_search_site = _normalize_search_site(value)
         elif attr == "auto_select_best":
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
         elif attr in (
