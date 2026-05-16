@@ -135,6 +135,7 @@ async def process_task(
         # --- Step 3: Try torrent if preferred or forced ---
         direct_reason: str | None = None
         method_to_use = task.force_method
+        auto_mode = method_to_use is None
         if not method_to_use:
             if gallery.torrent_count > 0:
                 method_to_use = DownloadMethod.TORRENT
@@ -153,9 +154,17 @@ async def process_task(
                 try:
                     torrents = await fetch_torrent_list(client, gallery)
                     if torrents:
-                        best_torrent = next((t for t in torrents if t.seeds > 0), torrents[0])
+                        best_torrent = next((t for t in torrents if t.seeds > 0), None)
+                        if not best_torrent and not auto_mode:
+                            best_torrent = torrents[0]
+                        elif not best_torrent:
+                            direct_reason = "available torrents have 0 seeds"
                 except Exception as e:
                     log.warning("Failed to fetch torrent list: %s", e)
+
+            if auto_mode and best_torrent and best_torrent.seeds <= 0:
+                best_torrent = None
+                direct_reason = "available torrents have 0 seeds"
 
             if best_torrent:
                 # Download the .torrent file into .torrents/ directory
@@ -224,7 +233,7 @@ async def process_task(
                 else:
                     direct_reason = "torrent file could not be saved"
             else:
-                direct_reason = "torrent list could not be loaded"
+                direct_reason = direct_reason or "torrent list could not be loaded"
 
         # --- Step 4: Direct image download (fallback or primary) ---
         task.method = DownloadMethod.DIRECT
