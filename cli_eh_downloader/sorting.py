@@ -6,7 +6,7 @@ from pathlib import Path
 
 from .config import Config
 from .models import GalleryInfo, SearchResult
-from .utils import sanitize_filename
+from .utils import matches_keyword_filter, sanitize_filename
 
 
 AI_KEYWORDS = (
@@ -70,14 +70,16 @@ def search_result_filter_reason(result: SearchResult, config: Config) -> str:
 
 
 def gallery_filter_reason(gallery: GalleryInfo, config: Config) -> str:
-    text_parts = [
-        gallery.title,
-        gallery.title_jpn,
-        gallery.category,
-        gallery.uploader,
-        *_all_tags(gallery),
-    ]
-    return _filter_reason_for_text(" ".join(text_parts), config)
+    return _filter_reason_for_text(" ".join(_gallery_search_text_parts(gallery)), config)
+
+
+def search_result_matches_keyword_filter(result: SearchResult, expression: str) -> bool:
+    text = " ".join([result.title, result.category, result.uploader])
+    return matches_keyword_filter(text, expression)
+
+
+def gallery_matches_keyword_filter(gallery: GalleryInfo, expression: str) -> bool:
+    return matches_keyword_filter(" ".join(_gallery_search_text_parts(gallery)), expression)
 
 
 def _filter_reason_for_text(text: str, config: Config) -> str:
@@ -111,7 +113,7 @@ def _publisher_folder(gallery: GalleryInfo) -> str:
 def _keyword_folder(gallery: GalleryInfo, config: Config) -> str:
     if not config.sort_by_keyword_keywords.strip():
         return ""
-    searchable = " ".join([gallery.title, gallery.title_jpn, *_all_tags(gallery)]).lower()
+    searchable = " ".join(_gallery_search_text_parts(gallery)).lower()
     for keyword in split_keywords(config.sort_by_keyword_keywords):
         if keyword.lower() in searchable:
             return sanitize_filename(keyword)
@@ -120,3 +122,16 @@ def _keyword_folder(gallery: GalleryInfo, config: Config) -> str:
 
 def _all_tags(gallery: GalleryInfo) -> list[str]:
     return [tag for tags in gallery.tags.values() for tag in tags]
+
+
+def _gallery_search_text_parts(gallery: GalleryInfo) -> list[str]:
+    parts = [
+        gallery.title,
+        gallery.title_jpn,
+        gallery.category,
+        gallery.uploader,
+    ]
+    for namespace, tags in gallery.tags.items():
+        parts.extend(tags)
+        parts.extend(f"{namespace}:{tag}" for tag in tags)
+    return parts

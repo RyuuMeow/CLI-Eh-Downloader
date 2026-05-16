@@ -54,6 +54,27 @@ class TaskManager:
         )
         return future.result()
 
+    def fetch_gallery_sync(self, url: str) -> GalleryInfo:
+        """Synchronously fetch gallery metadata without loading torrents."""
+        future = asyncio.run_coroutine_threadsafe(
+            self._fetch_gallery_async(url), self._loop
+        )
+        return future.result()
+
+    async def _fetch_gallery_async(self, url: str) -> GalleryInfo:
+        from .utils import parse_gallery_url
+        from .parser import fetch_gallery_info
+        from .models import SiteType
+
+        parsed = parse_gallery_url(url)
+        if not parsed:
+            raise ValueError("Invalid gallery URL")
+        gid, token, site = parsed
+        client = self._ensure_client()
+        if site == SiteType.EX_HENTAI and not client.can_access_exhentai():
+            raise ValueError("ExHentai requires cookies. Run: config set cookie")
+        return await fetch_gallery_info(client, gid, token, site)
+
     async def _fetch_info_async(self, url: str) -> tuple[GalleryInfo, list[TorrentInfo]]:
         from .utils import parse_gallery_url
         from .parser import fetch_gallery_info, fetch_torrent_list
@@ -119,6 +140,7 @@ class TaskManager:
         max_size_mb: float = 0.0,
         fast_queue: bool = False,
         apply_filters: bool = False,
+        keyword_filter: str = "",
         on_update: Callable[[DownloadTask], None] | None = None,
     ) -> DownloadTask:
         """Add a new download task. Returns the task immediately (non-blocking)."""
@@ -136,6 +158,7 @@ class TaskManager:
             max_size_mb=max_size_mb,
             fast_queue=fast_queue,
             apply_filters=apply_filters,
+            keyword_filter=keyword_filter,
         )
         with self._lock:
             self._tasks[task_id] = task

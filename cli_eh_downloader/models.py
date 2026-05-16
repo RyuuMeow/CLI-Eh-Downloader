@@ -109,6 +109,7 @@ class DownloadTask:
     fast_queue: bool = False
     notice: Optional[str] = None
     apply_filters: bool = False
+    keyword_filter: str = ""
 
     @property
     def display_title(self) -> str:

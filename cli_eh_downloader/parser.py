@@ -544,70 +544,9 @@ async def search_galleries(
         if prev_link and prev_link.get("href"):
             prev_url = prev_link["href"]
 
-    # --- Parse gallery rows ---
-    table = soup.select_one("table.itg")
-    if not table:
-        log.warning("No results table found for query: %s", query)
-        return SearchPage(results=results, current_page=page, total_results=total_results,
-                          next_url=next_url, prev_url=prev_url)
-
-    rows = table.select("tr")
-    for tr in rows[1:]:  # skip header row
-        try:
-            # Category
-            cat_td = tr.select_one("td.gl1c")
-            category = cat_td.get_text(strip=True) if cat_td else ""
-
-            # Title + gallery link
-            name_td = tr.select_one("td.gl3c")
-            if not name_td:
-                continue
-            link = name_td.select_one("a")
-            if not link or not link.get("href"):
-                continue
-
-            href = link["href"]
-            parsed = parse_gallery_url(href)
-            if not parsed:
-                continue
-            gid, token, _ = parsed
-            glink = link.select_one(".glink")
-            title = glink.get_text(" ", strip=True) if glink else link.get_text(" ", strip=True)
-
-            # Date + pages from gl2c
-            info_td = tr.select_one("td.gl2c")
-            posted = ""
-            pages = ""
-            if info_td:
-                info_text = info_td.get_text(" ", strip=True)
-                pages_match = re.search(r"(\d+)\s*pages?", info_text)
-                if pages_match:
-                    pages = pages_match.group(1)
-                date_match = re.search(r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})", info_text)
-                if date_match:
-                    posted = date_match.group(1)
-
-            # Uploader from gl4c
-            up_td = tr.select_one("td.gl4c")
-            uploader = ""
-            if up_td:
-                up_text = up_td.get_text(" ", strip=True)
-                up_text = re.sub(r"\d+\s*pages?", "", up_text).strip()
-                uploader = up_text
-
-            results.append(SearchResult(
-                gid=gid,
-                token=token,
-                url=href,
-                title=title,
-                category=category,
-                uploader=uploader,
-                pages=pages,
-                posted=posted,
-                site=site,
-            ))
-        except Exception:
-            continue
+    results = _parse_gallery_list_results(soup, site)
+    if not results:
+        log.warning("No gallery results found for query: %s", query)
 
     log.info("Search '%s' page %d returned %d results (total: %d)",
              query, page, len(results), total_results)
@@ -675,69 +614,133 @@ async def fetch_listing_page(
     # --- Determine site type from URL ---
     site = SiteType.EX_HENTAI if "exhentai.org" in base_url else SiteType.E_HENTAI
 
-    # --- Parse gallery rows (same logic as search_galleries) ---
-    table = soup.select_one("table.itg")
-    if not table:
-        log.warning("No results table found for listing URL: %s", base_url[:80])
-        return SearchPage(results=results, current_page=page, total_results=total_results,
-                          next_url=next_url, prev_url=prev_url)
-
-    rows = table.select("tr")
-    for tr in rows[1:]:  # skip header row
-        try:
-            cat_td = tr.select_one("td.gl1c")
-            category = cat_td.get_text(strip=True) if cat_td else ""
-
-            name_td = tr.select_one("td.gl3c")
-            if not name_td:
-                continue
-            link = name_td.select_one("a")
-            if not link or not link.get("href"):
-                continue
-
-            href = link["href"]
-            parsed_url = parse_gallery_url(href)
-            if not parsed_url:
-                continue
-            gid, token, _ = parsed_url
-            glink = link.select_one(".glink")
-            title = glink.get_text(" ", strip=True) if glink else link.get_text(" ", strip=True)
-
-            info_td = tr.select_one("td.gl2c")
-            posted = ""
-            pages = ""
-            if info_td:
-                info_text = info_td.get_text(" ", strip=True)
-                pages_match = re.search(r"(\d+)\s*pages?", info_text)
-                if pages_match:
-                    pages = pages_match.group(1)
-                date_match = re.search(r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})", info_text)
-                if date_match:
-                    posted = date_match.group(1)
-
-            up_td = tr.select_one("td.gl4c")
-            uploader = ""
-            if up_td:
-                up_text = up_td.get_text(" ", strip=True)
-                up_text = re.sub(r"\d+\s*pages?", "", up_text).strip()
-                uploader = up_text
-
-            results.append(SearchResult(
-                gid=gid,
-                token=token,
-                url=href,
-                title=title,
-                category=category,
-                uploader=uploader,
-                pages=pages,
-                posted=posted,
-                site=site,
-            ))
-        except Exception:
-            continue
+    results = _parse_gallery_list_results(soup, site)
+    if not results:
+        log.warning("No gallery results found for listing URL: %s", base_url[:80])
 
     log.info("Listing page %d returned %d results (total: %d)",
              page, len(results), total_results)
     return SearchPage(results=results, current_page=page, total_results=total_results,
                       next_url=next_url, prev_url=prev_url)
+
+
+def _parse_gallery_list_results(soup: BeautifulSoup, site: SiteType) -> list[SearchResult]:
+    """Parse gallery results from both table and thumbnail-grid list modes."""
+    results = _parse_table_gallery_results(soup, site)
+    if results:
+        return results
+    return _parse_grid_gallery_results(soup, site)
+
+
+def _parse_table_gallery_results(soup: BeautifulSoup, site: SiteType) -> list[SearchResult]:
+    table = soup.select_one("table.itg")
+    if not table:
+        return []
+
+    results: list[SearchResult] = []
+    seen: set[tuple[int, str]] = set()
+    for tr in table.select("tr")[1:]:  # skip header row
+        try:
+            name_td = tr.select_one("td.gl3c")
+            if not name_td:
+                continue
+            link = name_td.select_one("a[href]")
+            result = _search_result_from_link(link, site)
+            if not result:
+                continue
+
+            cat_td = tr.select_one("td.gl1c")
+            result.category = cat_td.get_text(strip=True) if cat_td else ""
+
+            info_td = tr.select_one("td.gl2c")
+            if info_td:
+                result.pages = _extract_pages(info_td.get_text(" ", strip=True))
+                result.posted = _extract_posted(info_td.get_text(" ", strip=True))
+
+            up_td = tr.select_one("td.gl4c")
+            if up_td:
+                up_text = up_td.get_text(" ", strip=True)
+                result.uploader = re.sub(r"\d+\s*pages?", "", up_text).strip()
+
+            key = (result.gid, result.token)
+            if key not in seen:
+                seen.add(key)
+                results.append(result)
+        except Exception:
+            log.debug("Failed to parse table gallery row", exc_info=True)
+    return results
+
+
+def _parse_grid_gallery_results(soup: BeautifulSoup, site: SiteType) -> list[SearchResult]:
+    root = soup.select_one("div.itg")
+    if not root:
+        return []
+
+    results: list[SearchResult] = []
+    seen: set[tuple[int, str]] = set()
+    for item in root.select(".gl1t, .gl1e, .gl2t, .gl3t"):
+        try:
+            link = item.select_one("a[href*='/g/']")
+            result = _search_result_from_link(link, site)
+            if not result:
+                continue
+
+            title_node = item.select_one(".glink")
+            if title_node:
+                result.title = title_node.get_text(" ", strip=True)
+
+            category_node = item.select_one(".cs")
+            if category_node:
+                result.category = category_node.get_text(" ", strip=True)
+
+            text = item.get_text(" ", strip=True)
+            result.pages = _extract_pages(text)
+            result.posted = _extract_posted(text)
+
+            key = (result.gid, result.token)
+            if key not in seen:
+                seen.add(key)
+                results.append(result)
+        except Exception:
+            log.debug("Failed to parse grid gallery item", exc_info=True)
+    return results
+
+
+def _search_result_from_link(link: Any, site: SiteType) -> SearchResult | None:
+    if not link or not link.get("href"):
+        return None
+
+    href = str(link["href"])
+    parsed = parse_gallery_url(href)
+    if not parsed:
+        return None
+
+    gid, token, parsed_site = parsed
+    glink = link.select_one(".glink")
+    img = link.select_one("img[alt]")
+    title = (
+        glink.get_text(" ", strip=True)
+        if glink
+        else str(img.get("alt", "")).strip()
+        if img
+        else link.get_text(" ", strip=True)
+    )
+
+    return SearchResult(
+        gid=gid,
+        token=token,
+        url=href,
+        title=title,
+        site=parsed_site or site,
+    )
+
+
+def _extract_pages(text: str) -> str:
+    match = re.search(r"(\d+)\s*pages?", text, re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _extract_posted(text: str) -> str:
+    match = re.search(r"(\d{4}-\d{2}-\d{2}\s*\d{2}:\d{2})", text)
+    return match.group(1) if match else ""
 

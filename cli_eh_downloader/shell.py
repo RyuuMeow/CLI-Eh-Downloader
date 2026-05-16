@@ -24,9 +24,15 @@ from .display import (
     print_task_update,
 )
 from .models import BulkDownloadConfig, BulkDownloadMode, DownloadMethod, DownloadTask, FetchMode, SearchResult, TaskStatus
-from .sorting import gallery_filter_reason, resolve_sorted_download_dir, search_result_filter_reason
+from .sorting import (
+    gallery_filter_reason,
+    gallery_matches_keyword_filter,
+    resolve_sorted_download_dir,
+    search_result_filter_reason,
+    search_result_matches_keyword_filter,
+)
 from .task_manager import TaskManager
-from .utils import GALLERY_URL_PATTERN, IMAGE_PAGE_URL_PATTERN, format_size, is_listing_url, matches_keyword_filter
+from .utils import GALLERY_URL_PATTERN, IMAGE_PAGE_URL_PATTERN, format_size, is_listing_url
 
 
 class Shell:
@@ -207,6 +213,7 @@ class Shell:
         download_dir: str | None = None,
         max_size_mb: float = 0.0,
         apply_filters: bool = False,
+        keyword_filter: str = "",
     ) -> bool:
         mode = mode or self.config.default_download_mode
         if not self._fast_queue_enabled(mode):
@@ -219,6 +226,7 @@ class Shell:
             max_size_mb=max_size_mb,
             fast_queue=True,
             apply_filters=apply_filters,
+            keyword_filter=keyword_filter,
             on_update=self._on_task_update,
         )
         print_task_added(task)
@@ -1235,7 +1243,15 @@ class Shell:
                     duplicate_skipped += 1
                     continue
                 if cfg.keyword_filter:
-                    if not matches_keyword_filter(result.title, cfg.keyword_filter):
+                    if search_result_matches_keyword_filter(result, cfg.keyword_filter):
+                        keyword_matched = True
+                    else:
+                        try:
+                            gallery = self.manager.fetch_gallery_sync(result.url)
+                            keyword_matched = gallery_matches_keyword_filter(gallery, cfg.keyword_filter)
+                        except Exception:
+                            keyword_matched = False
+                    if not keyword_matched:
                         skipped += 1
                         continue
                 if search_result_filter_reason(result, self.config):
@@ -1464,6 +1480,7 @@ class Shell:
                     download_dir=cfg.download_dir,
                     max_size_mb=cfg.max_size_mb,
                     apply_filters=True,
+                    keyword_filter=cfg.keyword_filter,
                 ):
                     queued_count += 1
                     console.print()
@@ -1481,6 +1498,11 @@ class Shell:
             reason = gallery_filter_reason(gallery, self.config)
             if reason:
                 print_info(f"    Skipped by filter: {reason}")
+                skipped_count += 1
+                continue
+
+            if cfg.keyword_filter and not gallery_matches_keyword_filter(gallery, cfg.keyword_filter):
+                print_info(f"    Skipped: keyword filter did not match '{cfg.keyword_filter}'")
                 skipped_count += 1
                 continue
 

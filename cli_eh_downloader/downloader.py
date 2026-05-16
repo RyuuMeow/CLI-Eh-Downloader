@@ -28,7 +28,7 @@ from .parser import (
     fetch_torrent_list,
     resolve_gallery_url_from_image_page,
 )
-from .sorting import gallery_filter_reason, resolve_sorted_download_dir
+from .sorting import gallery_filter_reason, gallery_matches_keyword_filter, resolve_sorted_download_dir
 from .torrent import HAS_LIBTORRENT, download_torrent_file, download_via_torrent
 from .torrent_client import (
     ensure_torrent_client_settings,
@@ -107,6 +107,12 @@ async def process_task(
                 task.error = f"Skipped by filter: {reason}"
                 _notify(on_update, task)
                 return
+
+        if task.keyword_filter and not gallery_matches_keyword_filter(gallery, task.keyword_filter):
+            task.status = TaskStatus.CANCELLED
+            task.error = f"Skipped: keyword filter did not match '{task.keyword_filter}'"
+            _notify(on_update, task)
+            return
 
         if task.max_size_mb > 0 and gallery.filesize:
             try:
