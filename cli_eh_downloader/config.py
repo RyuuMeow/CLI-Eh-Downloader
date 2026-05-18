@@ -52,10 +52,11 @@ class Config:
     search_default_search_site: str = "e-hentai"  # e-hentai, exhentai, both
 
     # Save settings
-    auto_sort: str = "off"  # auto, artist, publisher, keyword, off
+    auto_sort: str = "off"  # auto, artist, uploader, keyword, custom_template, off
     sort_by_keyword_keywords: str = ""
+    sort_template: str = "{Category}/{Artist || Uploader}"
     auto_sort_artist_priority: int = 10
-    auto_sort_publisher_priority: int = 15
+    auto_sort_uploader_priority: int = 15
     auto_sort_keyword_priority: int = 20
 
     # Filter settings
@@ -80,6 +81,15 @@ class Config:
     @auto_select_best.setter
     def auto_select_best(self, value: bool) -> None:
         self.default_download_mode = "auto" if value else "ask"
+
+    @property
+    def auto_sort_publisher_priority(self) -> int:
+        """Legacy alias for auto_sort_uploader_priority."""
+        return self.auto_sort_uploader_priority
+
+    @auto_sort_publisher_priority.setter
+    def auto_sort_publisher_priority(self, value: int) -> None:
+        self.auto_sort_uploader_priority = value
 
     @property
     def has_exhentai_cookies(self) -> bool:
@@ -134,8 +144,9 @@ class Config:
             "\n[save]\n",
             f"auto_sort = {_toml_string(_normalize_auto_sort(self.auto_sort))}\n",
             f"sort_by_keyword_keywords = {_toml_string(self.sort_by_keyword_keywords)}\n",
+            f"sort_template = {_toml_string(self.sort_template)}\n",
             f"auto_sort_artist_priority = {self.auto_sort_artist_priority}\n",
-            f"auto_sort_publisher_priority = {self.auto_sort_publisher_priority}\n",
+            f"auto_sort_uploader_priority = {self.auto_sort_uploader_priority}\n",
             f"auto_sort_keyword_priority = {self.auto_sort_keyword_priority}\n",
             "\n[filter]\n",
             f"anti_ai = {'true' if self.anti_ai else 'false'}\n",
@@ -209,8 +220,9 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
         "save": (
             "auto_sort",
             "sort_by_keyword_keywords",
+            "sort_template",
             "auto_sort_artist_priority",
-            "auto_sort_publisher_priority",
+            "auto_sort_uploader_priority",
             "auto_sort_keyword_priority",
         ),
         "filter": ("anti_ai", "keyword_filter"),
@@ -301,10 +313,14 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.sort_by_keyword_keywords = str(save["sort_by_keyword_keywords"])
     elif "keywords" in save:
         config.sort_by_keyword_keywords = str(save["keywords"])
+    if "sort_template" in save:
+        config.sort_template = str(save["sort_template"])
     if "auto_sort_artist_priority" in save:
         config.auto_sort_artist_priority = int(save["auto_sort_artist_priority"])
-    if "auto_sort_publisher_priority" in save:
-        config.auto_sort_publisher_priority = int(save["auto_sort_publisher_priority"])
+    if "auto_sort_uploader_priority" in save:
+        config.auto_sort_uploader_priority = int(save["auto_sort_uploader_priority"])
+    elif "auto_sort_publisher_priority" in save:
+        config.auto_sort_uploader_priority = int(save["auto_sort_publisher_priority"])
     if "auto_sort_keyword_priority" in save:
         config.auto_sort_keyword_priority = int(save["auto_sort_keyword_priority"])
 
@@ -351,12 +367,16 @@ def _normalize_auto_sort(value: str) -> str:
         "auto": "auto",
         "artist": "artist",
         "sort_by_artist": "artist",
-        "publisher": "publisher",
-        "sort_by_publisher": "publisher",
-        "uploader": "publisher",
-        "sort_by_uploader": "publisher",
+        "uploader": "uploader",
+        "sort_by_uploader": "uploader",
+        "publisher": "uploader",
+        "sort_by_publisher": "uploader",
         "keyword": "keyword",
         "sort_by_keyword": "keyword",
+        "custom_template": "custom_template",
+        "custom": "custom_template",
+        "template": "custom_template",
+        "sort_template": "custom_template",
         "off": "off",
         "none": "off",
         "false": "off",

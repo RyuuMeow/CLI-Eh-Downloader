@@ -2528,8 +2528,9 @@ class Shell:
         sort_labels = {
             "auto": "Auto",
             "artist": "Sort by Artist",
-            "publisher": "Sort by Publisher",
+            "uploader": "Sort by Uploader",
             "keyword": "Sort by keyword",
+            "custom_template": "Custom Template",
             "off": "Off",
         }
         search_site_labels = {
@@ -2590,6 +2591,7 @@ class Shell:
                 [
                     ("auto_sort", "Auto Sort"),
                     ("sort_by_keyword_keywords", "Sort by keyword keywords"),
+                    ("sort_template", "Sort Template"),
                     ("auto_sort_priority", "Auto Sort Priority"),
                 ],
             ),
@@ -2613,7 +2615,7 @@ class Shell:
             if key == "auto_sort_priority":
                 return (
                     f"Artist={self.config.auto_sort_artist_priority}, "
-                    f"Publisher={self.config.auto_sort_publisher_priority}, "
+                    f"Uploader={self.config.auto_sort_uploader_priority}, "
                     f"Keyword={self.config.auto_sort_keyword_priority}"
                 )
             if key in ("ipb_pass_hash", "igneous", "sk") and value:
@@ -2688,12 +2690,29 @@ class Shell:
                             choices=[
                                 questionary.Choice(title="Auto", value="auto"),
                                 questionary.Choice(title="Sort by Artist", value="artist"),
-                                questionary.Choice(title="Sort by Publisher", value="publisher"),
+                                questionary.Choice(title="Sort by Uploader", value="uploader"),
                                 questionary.Choice(title="Sort by keyword", value="keyword"),
+                                questionary.Choice(title="Custom Template", value="custom_template"),
                                 questionary.Choice(title="Off", value="off"),
                             ],
                             default=current,
                             instruction="(↑↓ select, Enter confirm, Ctrl-C back)",
+                        ).ask()
+                    except KeyboardInterrupt:
+                        new_value = None
+                elif selected_key == "sort_template":
+                    console.print(
+                        "[dim]Available: {Title}, {JapaneseTitle}, {Category}, {Artist}, "
+                        "{Uploader}, {Keyword}, {Year}, {Month}, {GID}, {Tags}[/dim]"
+                    )
+                    console.print(
+                        '[dim]OR fallback: {Artist || Uploader}; custom fallback: {Keyword || "Misc"}; '
+                        "example: {Category}/{Artist || Uploader}[/dim]"
+                    )
+                    try:
+                        new_value = questionary.text(
+                            "Sort Template:",
+                            default=str(current) if current else "{Category}/{Artist || Uploader}",
                         ).ask()
                     except KeyboardInterrupt:
                         new_value = None
@@ -2714,7 +2733,7 @@ class Shell:
                 elif selected_key == "auto_sort_priority":
                     priority_items = [
                         ("auto_sort_artist_priority", "Sort by Artist"),
-                        ("auto_sort_publisher_priority", "Sort by Publisher"),
+                        ("auto_sort_uploader_priority", "Sort by Uploader"),
                         ("auto_sort_keyword_priority", "Sort by keyword"),
                     ]
                     priority_choices = [
@@ -2784,9 +2803,15 @@ class Shell:
         sort_labels = {
             "auto": "Auto",
             "artist": "Sort by Artist",
-            "publisher": "Sort by Publisher",
+            "uploader": "Sort by Uploader",
             "keyword": "Sort by keyword",
+            "custom_template": "Custom Template",
             "off": "Off",
+        }
+        search_site_labels = {
+            "e-hentai": "E-Hentai",
+            "exhentai": "ExHentai",
+            "both": "Both",
         }
 
         table = Table(
@@ -2826,8 +2851,9 @@ class Shell:
             ("Search", "default_search_site", search_site_labels.get(c.search_default_search_site, "E-Hentai")),
             ("Save", "auto_sort", sort_labels.get(c.auto_sort, "Off")),
             ("Save", "sort_by_keyword_keywords", c.sort_by_keyword_keywords or "[dim]not set[/dim]"),
+            ("Save", "sort_template", c.sort_template or "[dim]not set[/dim]"),
             ("Save", "auto_sort_artist_priority", str(c.auto_sort_artist_priority)),
-            ("Save", "auto_sort_publisher_priority", str(c.auto_sort_publisher_priority)),
+            ("Save", "auto_sort_uploader_priority", str(c.auto_sort_uploader_priority)),
             ("Save", "auto_sort_keyword_priority", str(c.auto_sort_keyword_priority)),
             ("Filter", "anti_ai", str(c.anti_ai)),
             ("Filter", "keyword_filter", c.filter_keyword_filter or "[dim]not set[/dim]"),
@@ -2897,11 +2923,15 @@ class Shell:
             "save": "auto_sort",
             "sort_by_keyword_keywords": "sort_by_keyword_keywords",
             "sort_keywords": "sort_by_keyword_keywords",
+            "sort_template": "sort_template",
+            "template": "sort_template",
+            "custom_template": "sort_template",
             "auto_sort_artist_priority": "auto_sort_artist_priority",
             "sort_artist_priority": "auto_sort_artist_priority",
-            "auto_sort_publisher_priority": "auto_sort_publisher_priority",
-            "sort_publisher_priority": "auto_sort_publisher_priority",
-            "sort_uploader_priority": "auto_sort_publisher_priority",
+            "auto_sort_uploader_priority": "auto_sort_uploader_priority",
+            "sort_uploader_priority": "auto_sort_uploader_priority",
+            "auto_sort_publisher_priority": "auto_sort_uploader_priority",
+            "sort_publisher_priority": "auto_sort_uploader_priority",
             "auto_sort_keyword_priority": "auto_sort_keyword_priority",
             "sort_keyword_priority": "auto_sort_keyword_priority",
             "anti_ai": "anti_ai",
@@ -2919,7 +2949,7 @@ class Shell:
             "max_parallel",
             "retry_count",
             "auto_sort_artist_priority",
-            "auto_sort_publisher_priority",
+            "auto_sort_uploader_priority",
             "auto_sort_keyword_priority",
         ):
             try:

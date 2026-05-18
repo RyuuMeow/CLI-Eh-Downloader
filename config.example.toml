@@ -56,13 +56,20 @@ auto_detect_search_keyword = true
 default_search_site = "E-Hentai"
 
 [save]
-# Gallery folder sorting: auto, artist, publisher, keyword, off
+# Gallery folder sorting: auto, artist, uploader, keyword, custom_template, off
 auto_sort = "off"
 # Comma-separated keywords for keyword sorting. Earlier keywords have higher priority.
 sort_by_keyword_keywords = ""
+# Custom path template used when auto_sort = "custom_template".
+# Available placeholders include: {Title}, {JapaneseTitle}, {Category}, {Artist},
+# {Uploader}, {Keyword}, {Year}, {Month}, {GID}, {Tags}.
+# Use OR fallback with ||, e.g. {Artist || Uploader}. Quoted custom fallback
+# values are supported, e.g. {Keyword || "Misc"}. Missing values become
+# NoJapaneseTitle, NoMatchingKeywords, UnknownArtist, etc.
+sort_template = "{Category}/{Artist || Uploader}"
 # Lower number wins when auto_sort = "auto" and multiple methods are available.
 auto_sort_artist_priority = 10
-auto_sort_publisher_priority = 15
+auto_sort_uploader_priority = 15
 auto_sort_keyword_priority = 20
 
 [filter]
