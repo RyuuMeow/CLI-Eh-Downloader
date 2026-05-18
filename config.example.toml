@@ -72,6 +72,19 @@ auto_sort_artist_priority = 10
 auto_sort_uploader_priority = 15
 auto_sort_keyword_priority = 20
 
+# Optional custom save presets. The [save] section above is the Default preset.
+# Use with interactive commands like:
+#   add https://e-hentai.org/g/123/token/ -p MyPreset
+#   https://e-hentai.org/tag/example -p MyPreset
+#
+# [save.presets."MyPreset"]
+# auto_sort = "custom_template"
+# sort_by_keyword_keywords = "Uncensored, Decensored"
+# sort_template = "{Artist || Uploader}/{Category}/{Keyword || \"Censored\"}"
+# auto_sort_artist_priority = 10
+# auto_sort_uploader_priority = 15
+# auto_sort_keyword_priority = 20
+
 [filter]
 # Filter AI-related title keywords and tags in search/page downloads.
 # Direct gallery URL downloads are not filtered.
@@ -93,3 +106,4 @@ max_galleries = 0
 max_size_mb = 0.0
 keyword_filter = ""
 download_dir = ""
+save_preset = "Default"

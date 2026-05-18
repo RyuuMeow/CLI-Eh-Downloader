@@ -284,10 +284,10 @@ def print_help() -> None:
         (
             "Download",
             [
-                ("add <url>", "Add a gallery download task"),
-                ("<url>", "Paste a gallery URL directly to add"),
+                ("add <url> [-p preset]", "Add a gallery download task"),
+                ("<url> [-p preset]", "Paste a gallery URL directly to add"),
                 ("<image page url>", "Resolve a gallery image page back to its gallery"),
-                ("<listing url>", "Paste a tag/uploader/category URL for bulk download"),
+                ("<listing url> [-p preset]", "Paste a tag/uploader/category URL for bulk download"),
                 ("<keyword>", "Search galleries when auto-detect is enabled"),
                 ("search [-e] [-ex] <keyword>", "Search E-Hentai, ExHentai, or both"),
             ],

@@ -3,16 +3,69 @@
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
 
 
 CONFIG_FILENAME = "config.toml"
+DEFAULT_SAVE_PRESET_NAME = "Default"
 DEFAULT_CONFIG_PATHS = [
     Path.cwd() / CONFIG_FILENAME,
     Path.home() / ".config" / "cli-eh-downloader" / CONFIG_FILENAME,
 ]
+
+
+@dataclass
+class SavePreset:
+    """A named set of save sorting settings."""
+
+    auto_sort: str = "off"  # auto, artist, uploader, keyword, custom_template, off
+    sort_by_keyword_keywords: str = ""
+    sort_template: str = "{Category}/{Artist || Uploader}"
+    auto_sort_artist_priority: int = 10
+    auto_sort_uploader_priority: int = 15
+    auto_sort_keyword_priority: int = 20
+
+    @classmethod
+    def from_config(cls, config: "Config") -> "SavePreset":
+        return cls(
+            auto_sort=config.auto_sort,
+            sort_by_keyword_keywords=config.sort_by_keyword_keywords,
+            sort_template=config.sort_template,
+            auto_sort_artist_priority=config.auto_sort_artist_priority,
+            auto_sort_uploader_priority=config.auto_sort_uploader_priority,
+            auto_sort_keyword_priority=config.auto_sort_keyword_priority,
+        )
+
+    @classmethod
+    def from_mapping(cls, data: dict[str, Any], fallback: "SavePreset | None" = None) -> "SavePreset":
+        preset = replace(fallback) if fallback else cls()
+        if "auto_sort" in data:
+            preset.auto_sort = _normalize_auto_sort(str(data["auto_sort"]))
+        if "sort_by_keyword_keywords" in data:
+            preset.sort_by_keyword_keywords = str(data["sort_by_keyword_keywords"])
+        elif "keywords" in data:
+            preset.sort_by_keyword_keywords = str(data["keywords"])
+        if "sort_template" in data:
+            preset.sort_template = str(data["sort_template"])
+        if "auto_sort_artist_priority" in data:
+            preset.auto_sort_artist_priority = int(data["auto_sort_artist_priority"])
+        if "auto_sort_uploader_priority" in data:
+            preset.auto_sort_uploader_priority = int(data["auto_sort_uploader_priority"])
+        elif "auto_sort_publisher_priority" in data:
+            preset.auto_sort_uploader_priority = int(data["auto_sort_publisher_priority"])
+        if "auto_sort_keyword_priority" in data:
+            preset.auto_sort_keyword_priority = int(data["auto_sort_keyword_priority"])
+        return preset
+
+    def apply_to_config(self, config: "Config") -> None:
+        config.auto_sort = _normalize_auto_sort(self.auto_sort)
+        config.sort_by_keyword_keywords = self.sort_by_keyword_keywords
+        config.sort_template = self.sort_template
+        config.auto_sort_artist_priority = self.auto_sort_artist_priority
+        config.auto_sort_uploader_priority = self.auto_sort_uploader_priority
+        config.auto_sort_keyword_priority = self.auto_sort_keyword_priority
 
 
 @dataclass
@@ -58,6 +111,7 @@ class Config:
     auto_sort_artist_priority: int = 10
     auto_sort_uploader_priority: int = 15
     auto_sort_keyword_priority: int = 20
+    save_presets: dict[str, SavePreset] = field(default_factory=dict)
 
     # Filter settings
     anti_ai: bool = False
@@ -72,6 +126,7 @@ class Config:
     page_download_max_size_mb: float = 0.0
     page_download_keyword_filter: str = ""
     page_download_dir: str = ""
+    page_download_save_preset: str = DEFAULT_SAVE_PRESET_NAME
 
     @property
     def auto_select_best(self) -> bool:
@@ -94,6 +149,66 @@ class Config:
     @property
     def has_exhentai_cookies(self) -> bool:
         return bool(self.ipb_member_id and self.ipb_pass_hash and self.igneous)
+
+    def default_save_preset(self) -> SavePreset:
+        return SavePreset.from_config(self)
+
+    def save_preset_names(self) -> list[str]:
+        return [DEFAULT_SAVE_PRESET_NAME, *self.save_presets.keys()]
+
+    def resolve_save_preset_name(self, name: str | None) -> str | None:
+        if not name or name.strip().lower() == DEFAULT_SAVE_PRESET_NAME.lower():
+            return DEFAULT_SAVE_PRESET_NAME
+        wanted = name.strip()
+        for preset_name in self.save_presets:
+            if preset_name.lower() == wanted.lower():
+                return preset_name
+        return None
+
+    def get_save_preset(self, name: str | None = None) -> SavePreset | None:
+        resolved = self.resolve_save_preset_name(name)
+        if resolved is None:
+            return None
+        if resolved == DEFAULT_SAVE_PRESET_NAME:
+            return self.default_save_preset()
+        return self.save_presets.get(resolved)
+
+    def set_save_preset(self, name: str, preset: SavePreset) -> None:
+        resolved = self.resolve_save_preset_name(name)
+        if resolved == DEFAULT_SAVE_PRESET_NAME:
+            preset.apply_to_config(self)
+            return
+        self.save_presets[resolved or name.strip()] = preset
+
+    def delete_save_preset(self, name: str) -> bool:
+        resolved = self.resolve_save_preset_name(name)
+        if not resolved or resolved == DEFAULT_SAVE_PRESET_NAME:
+            return False
+        self.save_presets.pop(resolved, None)
+        if self.page_download_save_preset.lower() == resolved.lower():
+            self.page_download_save_preset = DEFAULT_SAVE_PRESET_NAME
+        return True
+
+    def rename_save_preset(self, old_name: str, new_name: str) -> bool:
+        resolved_old = self.resolve_save_preset_name(old_name)
+        cleaned_new = new_name.strip()
+        if not resolved_old or resolved_old == DEFAULT_SAVE_PRESET_NAME or not cleaned_new:
+            return False
+        if self.resolve_save_preset_name(cleaned_new) is not None:
+            return False
+        self.save_presets[cleaned_new] = self.save_presets.pop(resolved_old)
+        if self.page_download_save_preset.lower() == resolved_old.lower():
+            self.page_download_save_preset = cleaned_new
+        return True
+
+    def config_for_save_preset(self, name: str | None) -> "Config | None":
+        preset = self.get_save_preset(name)
+        if preset is None:
+            return None
+        config = replace(self)
+        config.save_presets = self.save_presets
+        preset.apply_to_config(config)
+        return config
 
     def get_cookies(self) -> dict[str, str]:
         cookies: dict[str, str] = {}
@@ -148,19 +263,36 @@ class Config:
             f"auto_sort_artist_priority = {self.auto_sort_artist_priority}\n",
             f"auto_sort_uploader_priority = {self.auto_sort_uploader_priority}\n",
             f"auto_sort_keyword_priority = {self.auto_sort_keyword_priority}\n",
-            "\n[filter]\n",
-            f"anti_ai = {'true' if self.anti_ai else 'false'}\n",
-            f"keyword_filter = {_toml_string(self.filter_keyword_filter)}\n",
-            "\n[page_download]\n",
-            f"fetch_mode = {_toml_string(_normalize_page_fetch_mode(self.page_download_fetch_mode))}\n",
-            f"start_page = {self.page_download_start_page}\n",
-            f"end_page = {self.page_download_end_page}\n",
-            f"download_mode = {_toml_string(_normalize_download_mode(self.page_download_mode))}\n",
-            f"max_galleries = {self.page_download_max_galleries}\n",
-            f"max_size_mb = {self.page_download_max_size_mb}\n",
-            f"keyword_filter = {_toml_string(self.page_download_keyword_filter)}\n",
-            f"download_dir = {_toml_string(self.page_download_dir)}\n",
         ]
+        for name, preset in self.save_presets.items():
+            lines.extend(
+                [
+                    f"\n[save.presets.{_toml_string(name)}]\n",
+                    f"auto_sort = {_toml_string(_normalize_auto_sort(preset.auto_sort))}\n",
+                    f"sort_by_keyword_keywords = {_toml_string(preset.sort_by_keyword_keywords)}\n",
+                    f"sort_template = {_toml_string(preset.sort_template)}\n",
+                    f"auto_sort_artist_priority = {preset.auto_sort_artist_priority}\n",
+                    f"auto_sort_uploader_priority = {preset.auto_sort_uploader_priority}\n",
+                    f"auto_sort_keyword_priority = {preset.auto_sort_keyword_priority}\n",
+                ]
+            )
+        lines.extend(
+            [
+                "\n[filter]\n",
+                f"anti_ai = {'true' if self.anti_ai else 'false'}\n",
+                f"keyword_filter = {_toml_string(self.filter_keyword_filter)}\n",
+                "\n[page_download]\n",
+                f"fetch_mode = {_toml_string(_normalize_page_fetch_mode(self.page_download_fetch_mode))}\n",
+                f"start_page = {self.page_download_start_page}\n",
+                f"end_page = {self.page_download_end_page}\n",
+                f"download_mode = {_toml_string(_normalize_download_mode(self.page_download_mode))}\n",
+                f"max_galleries = {self.page_download_max_galleries}\n",
+                f"max_size_mb = {self.page_download_max_size_mb}\n",
+                f"keyword_filter = {_toml_string(self.page_download_keyword_filter)}\n",
+                f"download_dir = {_toml_string(self.page_download_dir)}\n",
+                f"save_preset = {_toml_string(self.resolve_save_preset_name(self.page_download_save_preset) or DEFAULT_SAVE_PRESET_NAME)}\n",
+            ]
+        )
         save_path.write_text("".join(lines), encoding="utf-8")
 
 
@@ -235,6 +367,7 @@ def _config_has_missing_fields(data: dict[str, Any]) -> bool:
             "max_size_mb",
             "keyword_filter",
             "download_dir",
+            "save_preset",
         ),
     }
 
@@ -323,6 +456,16 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.auto_sort_uploader_priority = int(save["auto_sort_publisher_priority"])
     if "auto_sort_keyword_priority" in save:
         config.auto_sort_keyword_priority = int(save["auto_sort_keyword_priority"])
+    presets = save.get("presets", {}) if isinstance(save, dict) else {}
+    if isinstance(presets, dict):
+        default_preset = config.default_save_preset()
+        for preset_name, preset_data in presets.items():
+            if not isinstance(preset_data, dict):
+                continue
+            cleaned_name = str(preset_name).strip()
+            if not cleaned_name or cleaned_name.lower() == DEFAULT_SAVE_PRESET_NAME.lower():
+                continue
+            config.save_presets[cleaned_name] = SavePreset.from_mapping(preset_data, default_preset)
 
     filters = data.get("filter", {})
     if "anti_ai" in filters:
@@ -347,6 +490,11 @@ def _apply_config(config: Config, data: dict[str, Any]) -> None:
         config.page_download_keyword_filter = str(page_download["keyword_filter"])
     if "download_dir" in page_download:
         config.page_download_dir = str(page_download["download_dir"])
+    if "save_preset" in page_download:
+        config.page_download_save_preset = str(page_download["save_preset"])
+
+    if config.resolve_save_preset_name(config.page_download_save_preset) is None:
+        config.page_download_save_preset = DEFAULT_SAVE_PRESET_NAME
 
 
 def _normalize_download_mode(value: str) -> str:

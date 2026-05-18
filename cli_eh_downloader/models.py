@@ -110,6 +110,7 @@ class DownloadTask:
     notice: Optional[str] = None
     apply_filters: bool = False
     keyword_filter: str = ""
+    save_preset: str = "Default"
 
     @property
     def display_title(self) -> str:
@@ -170,4 +171,5 @@ class BulkDownloadConfig:
     max_size_mb: float = 0.0                         # 0 = no limit (in MB)
     keyword_filter: str = ""                         # Only download if title contains this
     download_dir: str = ""                           # Override download dir (empty = global)
+    save_preset: str = "Default"                     # Save settings preset
     total_results: int = 0                           # Populated after first fetch

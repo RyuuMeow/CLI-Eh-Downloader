@@ -147,6 +147,7 @@ class TaskManager:
         fast_queue: bool = False,
         apply_filters: bool = False,
         keyword_filter: str = "",
+        save_preset: str = "Default",
         on_update: Callable[[DownloadTask], None] | None = None,
     ) -> DownloadTask:
         """Add a new download task. Returns the task immediately (non-blocking)."""
@@ -165,6 +166,7 @@ class TaskManager:
             fast_queue=fast_queue,
             apply_filters=apply_filters,
             keyword_filter=keyword_filter,
+            save_preset=save_preset,
         )
         with self._lock:
             self._tasks[task_id] = task

@@ -125,9 +125,11 @@ async def process_task(
             except (ValueError, TypeError):
                 pass
 
+        save_config = config.config_for_save_preset(task.save_preset) or config
+
         # Determine output directory (images only go here)
         dir_name = sanitize_filename(gallery.title_jpn or gallery.title)
-        download_dir = resolve_sorted_download_dir(task.download_dir or config.download_dir, gallery, config)
+        download_dir = resolve_sorted_download_dir(task.download_dir or config.download_dir, gallery, save_config)
         task.output_dir = str(Path(download_dir) / dir_name)
 
         _notify(on_update, task)

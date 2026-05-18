@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import shlex
 import sys
 
 from .config import load_config
@@ -63,8 +64,13 @@ def main() -> None:
             return
         else:
             # Treat as a URL to download
-            urls.append(args[i])
-            i += 1
+            spec = args[i]
+            if i + 2 < len(args) and args[i + 1] in ("-p", "--preset", "--save-preset"):
+                spec = f"{shlex.quote(spec)} -p {shlex.quote(args[i + 2])}"
+                i += 3
+            else:
+                i += 1
+            urls.append(spec)
 
     config = load_config(config_path)
     _setup_logging(verbose or config.debug_mode)
@@ -73,7 +79,7 @@ def main() -> None:
     if urls:
         # Non-interactive mode: add URLs, wait for completion, then exit
         for url in urls:
-            shell._cmd_add(url)
+            shell._dispatch(url)
         # Show status and wait
         import time
         try:
@@ -95,13 +101,13 @@ def _print_usage() -> None:
         "\n"
         "Usage:\n"
         "  ehdl                          Start interactive shell\n"
-        "  ehdl <url> [url2] ...         Download galleries and exit\n"
+        "  ehdl <url> [-p preset] ...    Download galleries and exit\n"
         "  ehdl --config <path>          Use a custom config file\n"
         "  ehdl --verbose / -v           Show detailed log messages\n"
         "  ehdl --help                   Show this help\n"
         "\n"
         "Interactive commands:\n"
-        "  add <url>   Add a download task\n"
+        "  add <url> [-p preset] Add a download task\n"
         "  status      Show task progress\n"
         "  cancel <id> Cancel a task\n"
         "  config show Show configuration\n"

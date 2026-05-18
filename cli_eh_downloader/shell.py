@@ -10,7 +10,7 @@ from prompt_toolkit import PromptSession
 from prompt_toolkit.formatted_text import HTML
 from prompt_toolkit.history import InMemoryHistory
 
-from .config import Config
+from .config import DEFAULT_SAVE_PRESET_NAME, Config, SavePreset
 from .display import (
     console,
     live_status_display,
@@ -84,20 +84,6 @@ class Shell:
     # ------------------------------------------------------------------
 
     def _dispatch(self, line: str) -> None:
-        if GALLERY_URL_PATTERN.match(line):
-            self._cmd_add(line)
-            return
-
-        if IMAGE_PAGE_URL_PATTERN.match(line):
-            self._cmd_add(line)
-            return
-
-        # Detect listing pages (tag, uploader, category, etc.)
-        listing_type = is_listing_url(line.strip())
-        if listing_type:
-            self._cmd_bulk(line.strip(), listing_type)
-            return
-
         try:
             parts = shlex.split(line)
         except ValueError:
@@ -106,15 +92,42 @@ class Shell:
         if not parts:
             return
 
+        first = parts[0]
+        if GALLERY_URL_PATTERN.match(first):
+            preset_name, preset_ok = self._extract_save_preset_arg(parts[1:])
+            if not preset_ok:
+                return
+            self._cmd_add(first, save_preset=preset_name)
+            return
+
+        if IMAGE_PAGE_URL_PATTERN.match(first):
+            preset_name, preset_ok = self._extract_save_preset_arg(parts[1:])
+            if not preset_ok:
+                return
+            self._cmd_add(first, save_preset=preset_name)
+            return
+
+        # Detect listing pages (tag, uploader, category, etc.)
+        listing_type = is_listing_url(first)
+        if listing_type:
+            preset_name, preset_ok = self._extract_save_preset_arg(parts[1:])
+            if not preset_ok:
+                return
+            self._cmd_bulk(first, listing_type, save_preset=preset_name)
+            return
+
         cmd = parts[0].lower()
         args = parts[1:]
 
         match cmd:
             case "add" | "a":
                 if not args:
-                    print_error("Usage: add <url>")
+                    print_error("Usage: add <url> [-p preset]")
                     return
-                self._cmd_add(args[0])
+                save_preset, preset_ok = self._extract_save_preset_arg(args[1:])
+                if not preset_ok:
+                    return
+                self._cmd_add(args[0], save_preset=save_preset)
 
             case "search" | "find":
                 if not args:
@@ -158,6 +171,26 @@ class Shell:
                     return
                 print_error(f"Unknown command: {cmd}  (type [bold]help[/bold] for commands)")
 
+    def _extract_save_preset_arg(self, args: list[str]) -> tuple[str, bool]:
+        preset_name = DEFAULT_SAVE_PRESET_NAME
+        i = 0
+        while i < len(args):
+            arg = args[i]
+            if arg in ("-p", "--preset", "--save-preset"):
+                if i + 1 >= len(args):
+                    print_error("Usage: -p <preset>")
+                    return DEFAULT_SAVE_PRESET_NAME, False
+                requested = args[i + 1]
+                resolved = self.config.resolve_save_preset_name(requested)
+                if resolved is None:
+                    print_error(f"Invalid Preset: {requested}")
+                    return DEFAULT_SAVE_PRESET_NAME, False
+                preset_name = resolved
+                i += 2
+                continue
+            i += 1
+        return preset_name, True
+
     @staticmethod
     def _looks_like_link(line: str) -> bool:
         text = line.strip().lower()
@@ -175,18 +208,18 @@ class Shell:
     # Add command
     # ------------------------------------------------------------------
 
-    def _cmd_add(self, url: str) -> None:
+    def _cmd_add(self, url: str, save_preset: str = DEFAULT_SAVE_PRESET_NAME) -> None:
         parsed = GALLERY_URL_PATTERN.match(url)
         if not parsed:
             if IMAGE_PAGE_URL_PATTERN.match(url):
-                if self._queue_fast_download(url):
+                if self._queue_fast_download(url, save_preset=save_preset):
                     return
-                self._cmd_add_image_page(url)
+                self._cmd_add_image_page(url, save_preset=save_preset)
                 return
             print_error("Invalid gallery URL.")
             return
 
-        if self._queue_fast_download(url):
+        if self._queue_fast_download(url, save_preset=save_preset):
             return
 
         console.print("  [cyan]Fetching gallery info...[/cyan]")
@@ -199,9 +232,9 @@ class Shell:
         title = gallery.title_jpn or gallery.title
         console.print(f"  [bold]{title}[/bold]")
 
-        self._default_download(url, gallery, torrents)
+        self._default_download(url, gallery, torrents, save_preset=save_preset)
 
-    def _cmd_add_image_page(self, url: str) -> None:
+    def _cmd_add_image_page(self, url: str, save_preset: str = DEFAULT_SAVE_PRESET_NAME) -> None:
         console.print("  [cyan]Resolving image page to gallery...[/cyan]")
         try:
             gallery_url = self.manager.resolve_gallery_url_sync(url)
@@ -210,7 +243,7 @@ class Shell:
             return
 
         print_info(f"Resolved gallery URL: {gallery_url}")
-        self._cmd_add(gallery_url)
+        self._cmd_add(gallery_url, save_preset=save_preset)
 
     def _fast_queue_enabled(self, mode: str | None = None) -> bool:
         mode = mode or self.config.default_download_mode
@@ -224,6 +257,7 @@ class Shell:
         max_size_mb: float = 0.0,
         apply_filters: bool = False,
         keyword_filter: str = "",
+        save_preset: str = DEFAULT_SAVE_PRESET_NAME,
     ) -> bool:
         mode = mode or self.config.default_download_mode
         if not self._fast_queue_enabled(mode):
@@ -237,12 +271,21 @@ class Shell:
             fast_queue=True,
             apply_filters=apply_filters,
             keyword_filter=keyword_filter,
+            save_preset=save_preset,
             on_update=self._on_task_update,
         )
         print_task_added(task)
         return True
 
-    def _auto_download(self, url, gallery, torrents, download_dir: str | None = None, max_size_mb: float = 0.0) -> bool:
+    def _auto_download(
+        self,
+        url,
+        gallery,
+        torrents,
+        download_dir: str | None = None,
+        max_size_mb: float = 0.0,
+        save_preset: str = DEFAULT_SAVE_PRESET_NAME,
+    ) -> bool:
         """Auto-select best method and start download without prompts. Returns True."""
         from .torrent import HAS_LIBTORRENT
         from .torrent_client import ensure_torrent_client_settings
@@ -254,7 +297,8 @@ class Shell:
 
             if ensure_torrent_client_settings(self.config):
                 # Torrent-only: save .torrent, open with client, record in history. Done.
-                sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
+                save_config = self.config.config_for_save_preset(save_preset) or self.config
+                sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, save_config)
                 torrent_path = self._save_and_open_torrent(best, sorted_dir)
                 if torrent_path:
                     from .downloader import save_torrent_metadata
@@ -262,7 +306,13 @@ class Shell:
                     print_success("Torrent saved & opened. Download via torrent client.")
                 else:
                     # Fallback to direct if torrent save/open failed
-                    self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
+                    self._start_direct(
+                        url,
+                        gallery,
+                        download_dir=download_dir,
+                        max_size_mb=max_size_mb,
+                        save_preset=save_preset,
+                    )
             elif HAS_LIBTORRENT:
                 console.print(f"  [green]Using torrent[/green] (Seeds: {best.seeds})")
                 task = self.manager.add_task(
@@ -272,20 +322,40 @@ class Shell:
                     selected_torrent=best,
                     download_dir=download_dir,
                     max_size_mb=max_size_mb,
+                    save_preset=save_preset,
                     on_update=self._on_task_update,
                 )
                 print_task_added(task)
             else:
-                self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
+                self._start_direct(
+                    url,
+                    gallery,
+                    download_dir=download_dir,
+                    max_size_mb=max_size_mb,
+                    save_preset=save_preset,
+                )
             return True
 
         # No viable torrent (all 0 seeds or none available) → direct download
         if torrents and not viable_torrents:
             print_info("All torrents have 0 seeds, using direct download.")
-        self._start_direct(url, gallery, download_dir=download_dir, max_size_mb=max_size_mb)
+        self._start_direct(
+            url,
+            gallery,
+            download_dir=download_dir,
+            max_size_mb=max_size_mb,
+            save_preset=save_preset,
+        )
         return True
 
-    def _start_direct(self, url, gallery, download_dir: str | None = None, max_size_mb: float = 0.0):
+    def _start_direct(
+        self,
+        url,
+        gallery,
+        download_dir: str | None = None,
+        max_size_mb: float = 0.0,
+        save_preset: str = DEFAULT_SAVE_PRESET_NAME,
+    ):
         """Start a direct image download task."""
         task = self.manager.add_task(
             url,
@@ -293,20 +363,29 @@ class Shell:
             force_method=DownloadMethod.DIRECT,
             download_dir=download_dir,
             max_size_mb=max_size_mb,
+            save_preset=save_preset,
             on_update=self._on_task_update,
         )
         print_task_added(task)
         return True
 
-    def _default_download(self, url, gallery, torrents) -> bool:
+    def _default_download(self, url, gallery, torrents, save_preset: str = DEFAULT_SAVE_PRESET_NAME) -> bool:
         mode = self.config.default_download_mode
         if mode == "direct":
-            return self._start_direct(url, gallery)
+            return self._start_direct(url, gallery, save_preset=save_preset)
         if mode == "ask":
-            return self._interactive_download(url, gallery, torrents)
-        return self._auto_download(url, gallery, torrents)
+            return self._interactive_download(url, gallery, torrents, save_preset=save_preset)
+        return self._auto_download(url, gallery, torrents, save_preset=save_preset)
 
-    def _interactive_download(self, url, gallery, torrents, download_dir: str | None = None, max_size_mb: float = 0.0):
+    def _interactive_download(
+        self,
+        url,
+        gallery,
+        torrents,
+        download_dir: str | None = None,
+        max_size_mb: float = 0.0,
+        save_preset: str = DEFAULT_SAVE_PRESET_NAME,
+    ):
         """Show interactive selector for download method."""
         import questionary
         from .torrent import HAS_LIBTORRENT
@@ -361,7 +440,8 @@ class Shell:
             and torrent_info
             and (has_external_client or not HAS_LIBTORRENT)
         ):
-            sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, self.config)
+            save_config = self.config.config_for_save_preset(save_preset) or self.config
+            sorted_dir = resolve_sorted_download_dir(download_dir or self.config.download_dir, gallery, save_config)
             torrent_path = self._save_and_open_torrent(torrent_info, sorted_dir)
             if torrent_path:
                 from .downloader import save_torrent_metadata
@@ -376,6 +456,7 @@ class Shell:
             selected_torrent=torrent_info,
             download_dir=download_dir,
             max_size_mb=max_size_mb,
+            save_preset=save_preset,
             on_update=self._on_task_update,
         )
         print_task_added(task)
@@ -1061,7 +1142,12 @@ class Shell:
     # Bulk download (listing page)
     # ------------------------------------------------------------------
 
-    def _cmd_bulk(self, url: str, page_type: str) -> None:
+    def _cmd_bulk(
+        self,
+        url: str,
+        page_type: str,
+        save_preset: str = DEFAULT_SAVE_PRESET_NAME,
+    ) -> None:
         """Handle a listing page URL — show settings, checkout, then bulk download."""
         console.print(f"\n  [bold cyan]📋 Listing page detected[/bold cyan]  [dim]({page_type})[/dim]")
         console.print(f"  [dim]{url}[/dim]")
@@ -1086,8 +1172,11 @@ class Shell:
             page_type=page_type,
             total_results=total_results,
             download_dir=self.config.download_dir,
+            save_preset=save_preset,
         )
         self._apply_page_download_memory(bulk_cfg, estimated_pages)
+        if save_preset != DEFAULT_SAVE_PRESET_NAME:
+            bulk_cfg.save_preset = save_preset
 
         # Loop: Settings ↔ Checkout → Download
         while True:
@@ -1135,6 +1224,7 @@ class Shell:
             max_size_display = f"{cfg.max_size_mb:.0f} MB" if cfg.max_size_mb > 0 else "No limit"
             keyword_display = cfg.keyword_filter if cfg.keyword_filter else "(none)"
             dir_display = cfg.download_dir or self.config.download_dir
+            preset_display = self.config.resolve_save_preset_name(cfg.save_preset) or DEFAULT_SAVE_PRESET_NAME
 
             choices = [
                 questionary.Choice(
@@ -1156,6 +1246,10 @@ class Shell:
                 questionary.Choice(
                     title=f"🔍 Keyword Filter:   {keyword_display}",
                     value="keyword",
+                ),
+                questionary.Choice(
+                    title=f"💾 Save Preset:      {preset_display}",
+                    value="save_preset",
                 ),
                 questionary.Choice(
                     title=f"📂 Download Dir:     {dir_display}",
@@ -1284,6 +1378,23 @@ class Shell:
                 if val is not None:
                     cfg.keyword_filter = val.strip()
 
+            elif selected == "save_preset":
+                choices = [
+                    questionary.Choice(title=name, value=name)
+                    for name in self.config.save_preset_names()
+                ]
+                choices.append(questionary.Choice(title="← Back", value=_BACK))
+                try:
+                    val = questionary.select(
+                        "Save Preset:",
+                        choices=choices,
+                        default=self.config.resolve_save_preset_name(cfg.save_preset) or DEFAULT_SAVE_PRESET_NAME,
+                    ).ask()
+                except KeyboardInterrupt:
+                    continue
+                if val and val != _BACK:
+                    cfg.save_preset = val
+
             elif selected == "download_dir":
                 try:
                     val = questionary.text(
@@ -1315,6 +1426,9 @@ class Shell:
         cfg.max_size_mb = max(0.0, self.config.page_download_max_size_mb)
         cfg.keyword_filter = self.config.page_download_keyword_filter
         cfg.download_dir = self.config.page_download_dir or self.config.download_dir
+        cfg.save_preset = self.config.resolve_save_preset_name(
+            self.config.page_download_save_preset
+        ) or DEFAULT_SAVE_PRESET_NAME
 
     def _save_page_download_memory(self, cfg: BulkDownloadConfig) -> None:
         self.config.page_download_fetch_mode = cfg.fetch_mode.value
@@ -1325,6 +1439,9 @@ class Shell:
         self.config.page_download_max_size_mb = max(0.0, cfg.max_size_mb)
         self.config.page_download_keyword_filter = cfg.keyword_filter
         self.config.page_download_dir = cfg.download_dir
+        self.config.page_download_save_preset = (
+            self.config.resolve_save_preset_name(cfg.save_preset) or DEFAULT_SAVE_PRESET_NAME
+        )
         try:
             self.config.save()
         except Exception as e:
@@ -1624,6 +1741,7 @@ class Shell:
                     max_size_mb=cfg.max_size_mb,
                     apply_filters=True,
                     keyword_filter=cfg.keyword_filter,
+                    save_preset=cfg.save_preset,
                 ):
                     queued_count += 1
                     console.print()
@@ -1671,6 +1789,7 @@ class Shell:
                     torrents,
                     download_dir=cfg.download_dir,
                     max_size_mb=cfg.max_size_mb,
+                    save_preset=cfg.save_preset,
                 )
             elif cfg.download_mode == BulkDownloadMode.DIRECT:
                 self._start_direct(
@@ -1678,6 +1797,7 @@ class Shell:
                     gallery,
                     download_dir=cfg.download_dir,
                     max_size_mb=cfg.max_size_mb,
+                    save_preset=cfg.save_preset,
                 )
             else:  # AUTO
                 self._auto_download(
@@ -1686,6 +1806,7 @@ class Shell:
                     torrents,
                     download_dir=cfg.download_dir,
                     max_size_mb=cfg.max_size_mb,
+                    save_preset=cfg.save_preset,
                 )
 
             queued_count += 1
@@ -2643,6 +2764,10 @@ class Shell:
             if not selected_section or selected_section == _BACK:
                 return
 
+            if selected_section == "Save":
+                self._interactive_save_settings()
+                continue
+
             section_items = next(items for name, items in sections if name == selected_section)
 
             while True:
@@ -2792,6 +2917,291 @@ class Shell:
 
                 self._set_config(selected_key, new_value)
 
+    def _interactive_save_settings(self) -> None:
+        """Edit Default and custom save presets."""
+        import questionary
+
+        _ADD = "__ADD__"
+        _BACK = "__BACK__"
+
+        while True:
+            choices = [
+                questionary.Choice(title=name, value=name)
+                for name in self.config.save_preset_names()
+            ]
+            choices.extend(
+                [
+                    questionary.Choice(title="+ Add Preset", value=_ADD),
+                    questionary.Choice(title="← Back", value=_BACK),
+                ]
+            )
+
+            try:
+                selected = questionary.select(
+                    "Save Settings:",
+                    choices=choices,
+                    instruction="(↑↓ select, Enter edit, Ctrl-C back)",
+                ).ask()
+            except KeyboardInterrupt:
+                selected = None
+
+            if not selected or selected == _BACK:
+                return
+
+            if selected == _ADD:
+                try:
+                    name = questionary.text(
+                        "Preset name:",
+                        validate=self._validate_new_save_preset_name,
+                    ).ask()
+                except KeyboardInterrupt:
+                    name = None
+                if not name:
+                    continue
+                cleaned = name.strip()
+                self.config.save_presets[cleaned] = self.config.default_save_preset()
+                self.config.save()
+                print_success(f"Added preset: {cleaned}")
+                self._edit_save_preset(cleaned)
+                continue
+
+            self._edit_save_preset(selected)
+
+    def _validate_new_save_preset_name(self, value: str) -> bool | str:
+        cleaned = value.strip()
+        if not cleaned:
+            return "Preset name is required."
+        if self.config.resolve_save_preset_name(cleaned) is not None:
+            return "Preset already exists."
+        return True
+
+    def _save_preset_display_value(self, preset: SavePreset, key: str) -> str:
+        sort_labels = {
+            "auto": "Auto",
+            "artist": "Sort by Artist",
+            "uploader": "Sort by Uploader",
+            "keyword": "Sort by keyword",
+            "custom_template": "Custom Template",
+            "off": "Off",
+        }
+        if key == "auto_sort":
+            return sort_labels.get(preset.auto_sort, "Off")
+        if key == "auto_sort_priority":
+            return (
+                f"Artist={preset.auto_sort_artist_priority}, "
+                f"Uploader={preset.auto_sort_uploader_priority}, "
+                f"Keyword={preset.auto_sort_keyword_priority}"
+            )
+        value = getattr(preset, key, "")
+        return str(value) if value else "(not set)"
+
+    def _store_save_preset(self, name: str, preset: SavePreset) -> None:
+        resolved = self.config.resolve_save_preset_name(name) or name
+        if resolved == DEFAULT_SAVE_PRESET_NAME:
+            preset.apply_to_config(self.config)
+        else:
+            self.config.save_presets[resolved] = preset
+        self.config.save()
+
+    def _edit_save_preset(self, name: str) -> None:
+        import questionary
+
+        _EDIT = "__EDIT__"
+        _BACK = "__BACK__"
+        current_name = self.config.resolve_save_preset_name(name)
+        if current_name is None:
+            print_error(f"Invalid Preset: {name}")
+            return
+
+        while True:
+            preset = self.config.get_save_preset(current_name)
+            if preset is None:
+                return
+
+            items = [
+                ("auto_sort", "Auto Sort"),
+                ("sort_by_keyword_keywords", "Sort by keyword keywords"),
+                ("sort_template", "Sort Template"),
+                ("auto_sort_priority", "Auto Sort Priority"),
+            ]
+            choices = [
+                questionary.Choice(
+                    title=f"{label}: {self._save_preset_display_value(preset, key)}",
+                    value=key,
+                )
+                for key, label in items
+            ]
+            if current_name != DEFAULT_SAVE_PRESET_NAME:
+                choices.append(questionary.Choice(title="Edit Preset", value=_EDIT))
+            choices.append(questionary.Choice(title="← Back", value=_BACK))
+
+            try:
+                selected = questionary.select(
+                    f"Preset: {current_name}",
+                    choices=choices,
+                    instruction="(↑↓ select, Enter edit, Ctrl-C back)",
+                ).ask()
+            except KeyboardInterrupt:
+                selected = None
+
+            if not selected or selected == _BACK:
+                return
+
+            if selected == _EDIT:
+                updated_name = self._edit_save_preset_management(current_name)
+                if updated_name is None:
+                    return
+                current_name = updated_name
+                continue
+
+            if selected == "auto_sort":
+                try:
+                    new_value = questionary.select(
+                        "Auto Sort:",
+                        choices=[
+                            questionary.Choice(title="Auto", value="auto"),
+                            questionary.Choice(title="Sort by Artist", value="artist"),
+                            questionary.Choice(title="Sort by Uploader", value="uploader"),
+                            questionary.Choice(title="Sort by keyword", value="keyword"),
+                            questionary.Choice(title="Custom Template", value="custom_template"),
+                            questionary.Choice(title="Off", value="off"),
+                        ],
+                        default=preset.auto_sort,
+                        instruction="(↑↓ select, Enter confirm, Ctrl-C back)",
+                    ).ask()
+                except KeyboardInterrupt:
+                    new_value = None
+                if new_value is None:
+                    continue
+                preset.auto_sort = new_value
+            elif selected == "sort_template":
+                console.print(
+                    "[dim]Available: {Title}, {JapaneseTitle}, {Category}, {Artist}, "
+                    "{Uploader}, {Keyword}, {Year}, {Month}, {GID}, {Tags}[/dim]"
+                )
+                console.print(
+                    '[dim]OR fallback: {Artist || Uploader}; custom fallback: {Keyword || "Misc"}; '
+                    "example: {Category}/{Artist || Uploader}[/dim]"
+                )
+                try:
+                    new_value = questionary.text(
+                        "Sort Template:",
+                        default=preset.sort_template or "{Category}/{Artist || Uploader}",
+                    ).ask()
+                except KeyboardInterrupt:
+                    new_value = None
+                if new_value is None:
+                    continue
+                preset.sort_template = new_value
+            elif selected == "auto_sort_priority":
+                priority_items = [
+                    ("auto_sort_artist_priority", "Sort by Artist"),
+                    ("auto_sort_uploader_priority", "Sort by Uploader"),
+                    ("auto_sort_keyword_priority", "Sort by keyword"),
+                ]
+                priority_choices = [
+                    questionary.Choice(
+                        title=f"{label}: {getattr(preset, key)}",
+                        value=key,
+                    )
+                    for key, label in priority_items
+                ]
+                priority_choices.append(questionary.Choice(title="← Back", value=_BACK))
+                try:
+                    priority_key = questionary.select(
+                        "Auto Sort Priority:",
+                        choices=priority_choices,
+                        instruction="(lower number wins)",
+                    ).ask()
+                except KeyboardInterrupt:
+                    priority_key = None
+                if not priority_key or priority_key == _BACK:
+                    continue
+                try:
+                    priority_value = questionary.text(
+                        f"New value for {priority_key}:",
+                        default=str(getattr(preset, priority_key)),
+                        validate=lambda x: x.lstrip("-").isdigit(),
+                    ).ask()
+                except KeyboardInterrupt:
+                    priority_value = None
+                if priority_value is None:
+                    continue
+                setattr(preset, priority_key, int(priority_value))
+            else:
+                try:
+                    new_value = questionary.text(
+                        f"New value for {selected}:",
+                        default=str(getattr(preset, selected, "")),
+                    ).ask()
+                except KeyboardInterrupt:
+                    new_value = None
+                if new_value is None:
+                    continue
+                setattr(preset, selected, new_value)
+
+            self._store_save_preset(current_name, preset)
+            print_success(f"{current_name} updated.")
+
+    def _edit_save_preset_management(self, name: str) -> str | None:
+        import questionary
+
+        _BACK = "__BACK__"
+        try:
+            action = questionary.select(
+                f"Edit Preset: {name}",
+                choices=[
+                    questionary.Choice(title="Rename Preset", value="rename"),
+                    questionary.Choice(title="Delete Preset", value="delete"),
+                    questionary.Choice(title="← Back", value=_BACK),
+                ],
+                instruction="(↑↓ select, Enter confirm, Ctrl-C back)",
+            ).ask()
+        except KeyboardInterrupt:
+            action = None
+
+        if not action or action == _BACK:
+            return name
+
+        if action == "rename":
+            try:
+                new_name = questionary.text(
+                    "New preset name:",
+                    default=name,
+                    validate=lambda value: (
+                        True
+                        if value.strip() == name or self._validate_new_save_preset_name(value) is True
+                        else self._validate_new_save_preset_name(value)
+                    ),
+                ).ask()
+            except KeyboardInterrupt:
+                new_name = None
+            if not new_name or new_name.strip() == name:
+                return name
+            if self.config.rename_save_preset(name, new_name):
+                self.config.save()
+                cleaned = new_name.strip()
+                print_success(f"Renamed preset: {name} → {cleaned}")
+                return cleaned
+            print_error("Could not rename preset.")
+            return name
+
+        if action == "delete":
+            try:
+                confirmed = questionary.confirm(
+                    f"Delete preset '{name}'?",
+                    default=False,
+                ).ask()
+            except KeyboardInterrupt:
+                confirmed = False
+            if confirmed and self.config.delete_save_preset(name):
+                self.config.save()
+                print_success(f"Deleted preset: {name}")
+                return None
+            return name
+
+        return name
+
     def _show_config(self) -> None:
         from rich.table import Table
 
@@ -2865,7 +3275,32 @@ class Shell:
             ("Page Download", "max_size_mb", str(c.page_download_max_size_mb)),
             ("Page Download", "keyword_filter", c.page_download_keyword_filter or "[dim]not set[/dim]"),
             ("Page Download", "download_dir", c.page_download_dir or "[dim]not set[/dim]"),
+            (
+                "Page Download",
+                "save_preset",
+                c.resolve_save_preset_name(c.page_download_save_preset) or DEFAULT_SAVE_PRESET_NAME,
+            ),
         ]
+        for preset_name, preset in c.save_presets.items():
+            rows.extend(
+                [
+                    ("Save Preset", preset_name, ""),
+                    ("Save Preset", f"{preset_name}.auto_sort", sort_labels.get(preset.auto_sort, "Off")),
+                    (
+                        "Save Preset",
+                        f"{preset_name}.sort_by_keyword_keywords",
+                        preset.sort_by_keyword_keywords or "[dim]not set[/dim]",
+                    ),
+                    (
+                        "Save Preset",
+                        f"{preset_name}.sort_template",
+                        preset.sort_template or "[dim]not set[/dim]",
+                    ),
+                    ("Save Preset", f"{preset_name}.auto_sort_artist_priority", str(preset.auto_sort_artist_priority)),
+                    ("Save Preset", f"{preset_name}.auto_sort_uploader_priority", str(preset.auto_sort_uploader_priority)),
+                    ("Save Preset", f"{preset_name}.auto_sort_keyword_priority", str(preset.auto_sort_keyword_priority)),
+                ]
+            )
 
         for section, key, value in rows:
             table.add_row(section, key, value)
@@ -2934,6 +3369,8 @@ class Shell:
             "sort_publisher_priority": "auto_sort_uploader_priority",
             "auto_sort_keyword_priority": "auto_sort_keyword_priority",
             "sort_keyword_priority": "auto_sort_keyword_priority",
+            "page_download_save_preset": "page_download_save_preset",
+            "batch_save_preset": "page_download_save_preset",
             "anti_ai": "anti_ai",
             "keyword_filter": "filter_keyword_filter",
             "filter_keyword_filter": "filter_keyword_filter",
@@ -2969,6 +3406,12 @@ class Shell:
             self.config.auto_sort = _normalize_auto_sort(value)
         elif attr == "search_default_search_site":
             self.config.search_default_search_site = _normalize_search_site(value)
+        elif attr == "page_download_save_preset":
+            resolved = self.config.resolve_save_preset_name(value)
+            if resolved is None:
+                print_error(f"Invalid Preset: {value}")
+                return
+            self.config.page_download_save_preset = resolved
         elif attr == "auto_select_best":
             self.config.default_download_mode = "auto" if value.lower() in ("true", "1", "yes", "on", "enabled") else "ask"
         elif attr in (
